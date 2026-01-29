@@ -1,4 +1,86 @@
-# LLM Fine-Tuning Pipeline Architecture
+# LLM Fine-Tuning & RAG Pipeline Architecture
+
+## Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                           COMPLETE PIPELINE                                     │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+                              YOUR CODEBASE
+                              data/raw/
+                                   │
+                                   ▼
+         ┌─────────────────────────┴─────────────────────────┐
+         │                                                   │
+         ▼                                                   ▼
+┌─────────────────────┐                         ┌─────────────────────┐
+│   FINE-TUNING PATH  │                         │      RAG PATH       │
+│                     │                         │                     │
+│ Teaches model your  │                         │ Retrieves actual    │
+│ coding style        │                         │ code for queries    │
+└─────────────────────┘                         └─────────────────────┘
+         │                                                   │
+         ▼                                                   ▼
+┌─────────────────────┐                         ┌─────────────────────┐
+│ 1. Prepare Data     │                         │ 1. Index Codebase   │
+│                     │                         │                     │
+│ prepare_data.py     │                         │ index_codebase.py   │
+│ - Extract code      │                         │ - Chunk code        │
+│ - Generate prompts  │                         │ - Embed chunks      │
+│ - Output JSONL      │                         │ - Store in pgvector │
+└─────────────────────┘                         └─────────────────────┘
+         │                                                   │
+         ▼                                                   ▼
+┌─────────────────────┐                         ┌─────────────────────┐
+│ 2. Train            │                         │ 2. Query            │
+│                     │                         │                     │
+│ run_training.py     │                         │ query_codebase.py   │
+│ - Upload to GCS     │                         │ - Embed question    │
+│ - Fine-tune on      │                         │ - Retrieve chunks   │
+│   Vertex AI         │                         │ - LLM generates     │
+│ - Monitor job       │                         │   answer            │
+└─────────────────────┘                         └─────────────────────┘
+         │                                                   │
+         ▼                                                   │
+┌─────────────────────┐                                      │
+│ 3. Test             │                                      │
+│                     │                                      │
+│ test_model.py       │                                      │
+│ - Query tuned model │                                      │
+│ - Compare with base │                                      │
+└─────────────────────┘                                      │
+         │                                                   │
+         └─────────────────────────┬─────────────────────────┘
+                                   │
+                                   ▼
+                         ┌─────────────────────┐
+                         │   YOUR QUESTIONS    │
+                         │                     │
+                         │ "Is X implemented?" │
+                         │ "Write code like Y" │
+                         └─────────────────────┘
+
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  QUICK REFERENCE                                                                │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  RAG (query existing code):                                                     │
+│    docker compose exec app python scripts/index_codebase.py -s data/raw         │
+│    docker compose exec app python scripts/query_codebase.py -i                  │
+│                                                                                 │
+│  Fine-tuning (teach model your style):                                          │
+│    docker compose exec app python scripts/prepare_data.py                       │
+│    docker compose exec app python scripts/run_training.py                       │
+│    docker compose exec app python scripts/test_model.py -m MODEL -i             │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+# Fine-Tuning Pipeline (Detailed)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
