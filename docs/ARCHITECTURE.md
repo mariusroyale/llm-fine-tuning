@@ -353,3 +353,77 @@ Use RAG to query your codebase with natural language:
 │                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+# Docker Setup
+
+Run everything with Docker—no local PostgreSQL installation needed.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  DOCKER QUICK START                                                             │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  # 1. Start services (PostgreSQL + pgvector)                                    │
+│  docker-compose up -d pgvector                                                  │
+│                                                                                 │
+│  # 2. Build the app                                                             │
+│  docker-compose build app                                                       │
+│                                                                                 │
+│  # 3. Index your codebase                                                       │
+│  docker-compose run --rm app python scripts/index_codebase.py -s data/raw       │
+│                                                                                 │
+│  # 4. Query                                                                     │
+│  docker-compose run --rm app python scripts/query_codebase.py -i                │
+│                                                                                 │
+│  # 5. Fine-tuning (prepare data)                                                │
+│  docker-compose run --rm app python scripts/prepare_data.py                     │
+│                                                                                 │
+│  # Stop services                                                                │
+│  docker-compose down                                                            │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  DOCKER ARCHITECTURE                                                            │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  ┌─────────────────┐      ┌─────────────────┐                                   │
+│  │      app        │      │    pgvector     │                                   │
+│  │                 │      │                 │                                   │
+│  │  Python 3.11    │─────▶│  PostgreSQL 16  │                                   │
+│  │  + dependencies │      │  + pgvector     │                                   │
+│  │                 │      │                 │                                   │
+│  └────────┬────────┘      └─────────────────┘                                   │
+│           │                                                                     │
+│           ▼                                                                     │
+│  ┌─────────────────┐                                                            │
+│  │  Mounted Volumes│                                                            │
+│  │                 │                                                            │
+│  │  - ./data/raw   │  Your source code                                          │
+│  │  - ./config     │  Configuration                                             │
+│  │  - ~/.config/   │  GCP credentials                                           │
+│  │      gcloud     │                                                            │
+│  └─────────────────┘                                                            │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  ENVIRONMENT VARIABLES                                                          │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  Database (auto-configured in docker-compose):                                  │
+│    PGHOST=pgvector                                                              │
+│    PGPORT=5432                                                                  │
+│    PGDATABASE=codebase_rag                                                      │
+│    PGUSER=postgres                                                              │
+│    PGPASSWORD=postgres                                                          │
+│                                                                                 │
+│  GCP (mount your credentials or set):                                           │
+│    GOOGLE_APPLICATION_CREDENTIALS=/path/to/credentials.json                     │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```

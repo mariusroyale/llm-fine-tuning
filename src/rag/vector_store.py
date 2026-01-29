@@ -15,10 +15,10 @@ class PgVectorStore:
 
     def __init__(
         self,
-        host: str = "localhost",
-        port: int = 5432,
-        database: str = "codebase_rag",
-        user: str = "postgres",
+        host: Optional[str] = None,
+        port: Optional[int] = None,
+        database: Optional[str] = None,
+        user: Optional[str] = None,
         password: Optional[str] = None,
         table_name: str = "code_chunks",
         embedding_dimensions: int = 768,
@@ -26,18 +26,18 @@ class PgVectorStore:
         """Initialize the vector store.
 
         Args:
-            host: PostgreSQL host
-            port: PostgreSQL port
-            database: Database name
-            user: Database user
-            password: Database password (uses PGPASSWORD env var if not provided)
+            host: PostgreSQL host (defaults to PGHOST env var or localhost)
+            port: PostgreSQL port (defaults to PGPORT env var or 5432)
+            database: Database name (defaults to PGDATABASE env var or codebase_rag)
+            user: Database user (defaults to PGUSER env var or postgres)
+            password: Database password (defaults to PGPASSWORD env var)
             table_name: Table name for storing chunks
             embedding_dimensions: Dimensions of embedding vectors
         """
-        self.host = host
-        self.port = port
-        self.database = database
-        self.user = user
+        self.host = host or os.environ.get("PGHOST", "localhost")
+        self.port = port or int(os.environ.get("PGPORT", "5432"))
+        self.database = database or os.environ.get("PGDATABASE", "codebase_rag")
+        self.user = user or os.environ.get("PGUSER", "postgres")
         self.password = password or os.environ.get("PGPASSWORD", "")
         self.table_name = table_name
         self.embedding_dimensions = embedding_dimensions
