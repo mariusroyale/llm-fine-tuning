@@ -76,6 +76,24 @@ console = Console()
     default=None,
     help="LLM model for generation (overrides config)",
 )
+@click.option(
+    "--with-deps",
+    "-d",
+    is_flag=True,
+    help="Include dependency context (referenced classes, templates)",
+)
+@click.option(
+    "--class-lookup",
+    type=str,
+    default=None,
+    help="Look up a specific class with full dependency context",
+)
+@click.option(
+    "--template-deps",
+    type=str,
+    default=None,
+    help="Find Java dependencies for a specific template",
+)
 def main(
     config: Path,
     query: str,
@@ -85,6 +103,9 @@ def main(
     show_sources: bool,
     retrieve_only: bool,
     model: str,
+    with_deps: bool,
+    class_lookup: str,
+    template_deps: str,
 ):
     """Query your codebase using natural language.
 
@@ -100,6 +121,15 @@ def main(
 
         # Filter by language
         python scripts/query_codebase.py -q "error handling" -l java
+
+        # Query with dependency context (includes referenced classes)
+        python scripts/query_codebase.py -q "UserService template" --with-deps
+
+        # Look up a specific class with all its relationships
+        python scripts/query_codebase.py --class-lookup UserService
+
+        # Find Java classes referenced by a template
+        python scripts/query_codebase.py --template-deps "config/user-template.json"
     """
     console.print(
         Panel.fit(
@@ -171,6 +201,18 @@ def main(
         console.print("  3. Run: python scripts/index_codebase.py first")
         return
 
+    # Class lookup mode
+    if class_lookup:
+        run_class_lookup(retriever, class_lookup, show_sources)
+        store.close()
+        return
+
+    # Template dependencies mode
+    if template_deps:
+        run_template_deps(retriever, template_deps, show_sources)
+        store.close()
+        return
+
     # Single query mode
     if query and not interactive:
         run_single_query(
@@ -180,6 +222,7 @@ def main(
             language=language,
             show_sources=show_sources,
             retrieve_only=retrieve_only,
+            with_deps=with_deps,
         )
         store.close()
         return
@@ -211,6 +254,7 @@ def run_single_query(
     language: str,
     show_sources: bool,
     retrieve_only: bool,
+    with_deps: bool = False,
 ):
     """Run a single query."""
     console.print(f"[bold]Query:[/bold] {query}\n")
@@ -221,7 +265,10 @@ def run_single_query(
         display_chunks(results, show_code=show_sources)
     else:
         # Full RAG: retrieve + generate
-        response = retriever.query(query, top_k=top_k, language=language)
+        if with_deps:
+            response = retriever.query_with_dependencies(query, top_k=top_k)
+        else:
+            response = retriever.query(query, top_k=top_k, language=language)
 
         console.print("[bold]Answer:[/bold]")
         console.print(Panel(Markdown(response.answer)))
@@ -232,6 +279,107 @@ def run_single_query(
                 list(zip(response.sources, response.scores)),
                 show_code=True,
             )
+
+        if show_sources and response.dependencies:
+            console.print("\n[bold]Dependencies:[/bold]")
+            for i, chunk in enumerate(response.dependencies, 1):
+                location = f"{chunk.file_path}:{chunk.start_line}-{chunk.end_line}"
+                name = chunk.class_name or chunk.file_path
+                console.print(f"  [cyan]{i}. {name}[/cyan] [dim]({location})[/dim]")
+
+
+def run_class_lookup(retriever: CodeRetriever, class_name: str, show_sources: bool):
+    """Look up a class with full dependency context."""
+    console.print(f"[bold]Looking up class:[/bold] {class_name}\n")
+
+    response = retriever.query_class_with_context(class_name)
+
+    console.print("[bold]Analysis:[/bold]")
+    console.print(Panel(Markdown(response.answer)))
+
+    if show_sources and response.sources:
+        console.print("\n[bold]Class Code:[/bold]")
+        for chunk in response.sources:
+            location = f"{chunk.file_path}:{chunk.start_line}-{chunk.end_line}"
+            console.print(f"[dim]{location}[/dim]")
+            syntax = Syntax(
+                chunk.content[:1000] + ("..." if len(chunk.content) > 1000 else ""),
+                chunk.language,
+                theme="monokai",
+                line_numbers=True,
+                start_line=chunk.start_line,
+            )
+            console.print(Panel(syntax, border_style="green"))
+
+    if response.dependencies:
+        console.print("\n[bold]Related Code (Dependencies & References):[/bold]")
+        for i, chunk in enumerate(response.dependencies, 1):
+            location = f"{chunk.file_path}:{chunk.start_line}-{chunk.end_line}"
+            name = chunk.class_name or chunk.file_path
+            chunk_type = chunk.chunk_type or "code"
+            console.print(f"\n[cyan]{i}. {name}[/cyan] ({chunk_type})")
+            console.print(f"   [dim]{location}[/dim]")
+
+            if show_sources:
+                preview = chunk.content[:500] + (
+                    "..." if len(chunk.content) > 500 else ""
+                )
+                syntax = Syntax(
+                    preview,
+                    chunk.language,
+                    theme="monokai",
+                    line_numbers=True,
+                    start_line=chunk.start_line,
+                )
+                console.print(Panel(syntax, border_style="dim"))
+
+
+def run_template_deps(retriever: CodeRetriever, template_path: str, show_sources: bool):
+    """Find Java dependencies for a template."""
+    console.print(f"[bold]Finding dependencies for template:[/bold] {template_path}\n")
+
+    response = retriever.find_template_dependencies(template_path)
+
+    console.print("[bold]Analysis:[/bold]")
+    console.print(Panel(Markdown(response.answer)))
+
+    if show_sources and response.sources:
+        console.print("\n[bold]Template:[/bold]")
+        for chunk in response.sources:
+            location = f"{chunk.file_path}:{chunk.start_line}-{chunk.end_line}"
+            console.print(f"[dim]{location}[/dim]")
+            if chunk.references:
+                console.print(
+                    f"[yellow]References: {', '.join(chunk.references)}[/yellow]"
+                )
+            syntax = Syntax(
+                chunk.content[:1500] + ("..." if len(chunk.content) > 1500 else ""),
+                chunk.language,
+                theme="monokai",
+                line_numbers=True,
+                start_line=chunk.start_line,
+            )
+            console.print(Panel(syntax, border_style="blue"))
+
+    if response.dependencies:
+        console.print("\n[bold]Java Class Dependencies:[/bold]")
+        for i, chunk in enumerate(response.dependencies, 1):
+            location = f"{chunk.file_path}:{chunk.start_line}-{chunk.end_line}"
+            console.print(f"\n[cyan]{i}. {chunk.class_name}[/cyan]")
+            console.print(f"   [dim]{location}[/dim]")
+
+            if show_sources:
+                preview = chunk.content[:500] + (
+                    "..." if len(chunk.content) > 500 else ""
+                )
+                syntax = Syntax(
+                    preview,
+                    chunk.language,
+                    theme="monokai",
+                    line_numbers=True,
+                    start_line=chunk.start_line,
+                )
+                console.print(Panel(syntax, border_style="green"))
 
 
 def display_chunks(results: list, show_code: bool = True):

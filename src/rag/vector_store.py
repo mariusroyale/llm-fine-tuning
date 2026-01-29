@@ -87,6 +87,7 @@ class PgVectorStore:
                     class_name TEXT,
                     method_name TEXT,
                     documentation TEXT,
+                    references TEXT[],
                     metadata JSONB,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -137,8 +138,8 @@ class PgVectorStore:
                     f"""
                     INSERT INTO {self.table_name}
                     (id, content, embedding, language, chunk_type, file_path,
-                     start_line, end_line, class_name, method_name, documentation, metadata)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     start_line, end_line, class_name, method_name, documentation, references, metadata)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (id) DO UPDATE SET
                         content = EXCLUDED.content,
                         embedding = EXCLUDED.embedding,
@@ -150,6 +151,7 @@ class PgVectorStore:
                         class_name = EXCLUDED.class_name,
                         method_name = EXCLUDED.method_name,
                         documentation = EXCLUDED.documentation,
+                        references = EXCLUDED.references,
                         metadata = EXCLUDED.metadata
                     """,
                     (
@@ -164,6 +166,7 @@ class PgVectorStore:
                         chunk.class_name,
                         chunk.method_name,
                         chunk.documentation,
+                        chunk.references if chunk.references else None,
                         json.dumps(chunk.metadata) if chunk.metadata else None,
                     ),
                 )
@@ -214,7 +217,7 @@ class PgVectorStore:
             SELECT
                 id, content, language, chunk_type, file_path,
                 start_line, end_line, class_name, method_name,
-                documentation, metadata,
+                documentation, references, metadata,
                 1 - (embedding <=> %s) as similarity
             FROM {self.table_name}
             {where_clause}
@@ -231,7 +234,8 @@ class PgVectorStore:
 
         results = []
         for row in rows:
-            metadata = json.loads(row[10]) if row[10] else {}
+            references = row[10] if row[10] else []
+            metadata = json.loads(row[11]) if row[11] else {}
             chunk = CodeChunk(
                 id=row[0],
                 content=row[1],
@@ -243,12 +247,108 @@ class PgVectorStore:
                 class_name=row[7],
                 method_name=row[8],
                 documentation=row[9],
+                references=references,
                 metadata=metadata,
             )
-            similarity = row[11]
+            similarity = row[12]
             results.append((chunk, similarity))
 
         return results
+
+    def search_by_class_reference(
+        self,
+        class_name: str,
+        top_k: int = 10,
+    ) -> list[CodeChunk]:
+        """Find chunks that reference a specific class.
+
+        Args:
+            class_name: Class name to search for
+            top_k: Maximum results
+
+        Returns:
+            List of chunks that reference this class
+        """
+        with self._conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                    id, content, language, chunk_type, file_path,
+                    start_line, end_line, class_name, method_name,
+                    documentation, references, metadata
+                FROM {self.table_name}
+                WHERE %s = ANY(references)
+                LIMIT %s
+                """,
+                (class_name, top_k),
+            )
+            rows = cur.fetchall()
+
+        results = []
+        for row in rows:
+            references = row[10] if row[10] else []
+            metadata = json.loads(row[11]) if row[11] else {}
+            chunk = CodeChunk(
+                id=row[0],
+                content=row[1],
+                language=row[2],
+                chunk_type=row[3],
+                file_path=row[4],
+                start_line=row[5],
+                end_line=row[6],
+                class_name=row[7],
+                method_name=row[8],
+                documentation=row[9],
+                references=references,
+                metadata=metadata,
+            )
+            results.append(chunk)
+
+        return results
+
+    def get_class_chunk(self, class_name: str) -> Optional[CodeChunk]:
+        """Get the chunk for a specific class.
+
+        Args:
+            class_name: Class name to find
+
+        Returns:
+            CodeChunk for the class, or None if not found
+        """
+        with self._conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                    id, content, language, chunk_type, file_path,
+                    start_line, end_line, class_name, method_name,
+                    documentation, references, metadata
+                FROM {self.table_name}
+                WHERE class_name = %s AND chunk_type = 'class'
+                LIMIT 1
+                """,
+                (class_name,),
+            )
+            row = cur.fetchone()
+
+        if not row:
+            return None
+
+        references = row[10] if row[10] else []
+        metadata = json.loads(row[11]) if row[11] else {}
+        return CodeChunk(
+            id=row[0],
+            content=row[1],
+            language=row[2],
+            chunk_type=row[3],
+            file_path=row[4],
+            start_line=row[5],
+            end_line=row[6],
+            class_name=row[7],
+            method_name=row[8],
+            documentation=row[9],
+            references=references,
+            metadata=metadata,
+        )
 
     def delete_by_file(self, file_path: str) -> int:
         """Delete all chunks from a specific file.

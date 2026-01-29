@@ -50,7 +50,7 @@ extraction:
 
 # Training Strategy Configuration
 strategy:
-  # Options: code_explanation, code_generation, code_review, documentation, mixed
+  # Options: code_explanation, code_generation, code_review, template_generation, mixed
   type: "code_explanation"
 
   # System instruction for the fine-tuned model
@@ -100,6 +100,19 @@ rag:
   # Retrieval settings
   top_k: 5 # Number of chunks to retrieve
 
+  # Dependency-aware retrieval
+  include_dependencies: true # Fetch related classes automatically
+  max_dependencies: 3 # Max dependencies per source chunk
+
+  # Chunking settings
+  chunking:
+    include_methods: true # Create chunks for individual methods
+    include_classes: true # Create chunks for full classes
+    include_templates: true # Index JSON templates
+    include_documents: true # Index markdown/text documents
+    max_chunk_lines: 200 # Maximum lines per chunk
+    min_chunk_lines: 3 # Skip tiny chunks
+
   # PostgreSQL + pgvector database settings
   pgvector:
     host: "localhost"
@@ -119,3 +132,30 @@ rag:
     - Include specific file paths and line numbers when referencing code
     - Provide code snippets in your answer when relevant
     - Be concise but thorough
+
+# Template Generation Settings (for training)
+templates:
+  # Directory containing JSON templates (relative to data/raw)
+  template_dir: "templates"
+
+  # Directory containing Java source files
+  java_dir: "java"
+
+  # Optional manual class-to-template mappings file
+  mapping_file: null # e.g., "config/template_mappings.json"
+
+  # Include synthetic examples for unmatched classes
+  include_synthetic: true
+
+  # System instruction for template generation model
+  system_instruction: |
+    You are an expert at analyzing Java code and generating corresponding
+    JSON templates. You understand Java class structure, fields, methods,
+    and inheritance, and can map these to JSON schema representations.
+
+    When generating JSON templates:
+    - Analyze the Java class's fields and their types
+    - Include appropriate metadata and type mappings
+    - Reference related classes by their names
+    - Follow the established template structure used in this project
+    - Preserve relationships and dependencies between components

@@ -114,23 +114,35 @@ def main(
     console.print()
 
     # Step 1: Chunk source code
-    console.print("[bold]Step 1: Chunking source code...[/bold]")
+    console.print(
+        "[bold]Step 1: Chunking source code, templates, and documents...[/bold]"
+    )
 
     chunker = CodeChunker(
         include_methods=True,
         include_classes=True,
         include_documentation=True,
+        include_templates=True,
+        include_documents=True,
     )
 
     chunks = chunker.chunk_directory(source_dir)
 
     if not chunks:
-        console.print(f"[yellow]No source code found in {source_dir}[/yellow]")
-        console.print("\nMake sure your source code is in the correct location:")
+        console.print(f"[yellow]No content found in {source_dir}[/yellow]")
+        console.print("\nMake sure your content is in the correct location:")
         console.print("  - Java files: data/raw/java/")
-        console.print("  - Python files: data/raw/")
-        console.print("  - Other files: data/raw/")
+        console.print("  - JSON templates: data/raw/templates/")
+        console.print("  - Documents: data/raw/docs/")
+        console.print("  - Other code: data/raw/")
         return
+
+    # Show known classes for cross-referencing
+    known_classes = chunker.get_known_classes()
+    if known_classes:
+        console.print(
+            f"\n[dim]Found {len(known_classes)} Java classes for cross-referencing[/dim]"
+        )
 
     # Show chunk statistics
     table = Table(title="Chunk Statistics")
@@ -139,11 +151,15 @@ def main(
 
     by_language = {}
     by_type = {}
+    chunks_with_refs = 0
     for chunk in chunks:
         by_language[chunk.language] = by_language.get(chunk.language, 0) + 1
         by_type[chunk.chunk_type] = by_type.get(chunk.chunk_type, 0) + 1
+        if chunk.references:
+            chunks_with_refs += 1
 
     table.add_row("Total Chunks", str(len(chunks)))
+    table.add_row("Chunks with Class References", str(chunks_with_refs))
     table.add_row("", "")
     table.add_row("[bold]By Language[/bold]", "")
     for lang, count in sorted(by_language.items()):

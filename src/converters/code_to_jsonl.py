@@ -11,6 +11,7 @@ from ..extractors.java_extractor import JavaClass, JavaExtractor
 from .strategies.code_explanation import CodeExplanationStrategy
 from .strategies.code_generation import CodeGenerationStrategy
 from .strategies.code_review import CodeReviewStrategy
+from .strategies.template_generation import TemplateGenerationStrategy
 
 
 class CodeToJSONLConverter:
@@ -20,6 +21,7 @@ class CodeToJSONLConverter:
         "code_explanation": CodeExplanationStrategy,
         "code_generation": CodeGenerationStrategy,
         "code_review": CodeReviewStrategy,
+        "template_generation": TemplateGenerationStrategy,
     }
 
     def __init__(

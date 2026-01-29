@@ -19,6 +19,7 @@ class RAGResponse:
     scores: list[float]
     query: str
     model: str
+    dependencies: list[CodeChunk] = field(default_factory=list)
 
     def format_sources(self) -> str:
         """Format sources for display."""
@@ -27,6 +28,14 @@ class RAGResponse:
             location = f"{chunk.file_path}:{chunk.start_line}-{chunk.end_line}"
             name = chunk.method_name or chunk.class_name or chunk.file_path
             lines.append(f"{i}. {name} ({location}) [score: {score:.3f}]")
+
+        if self.dependencies:
+            lines.append("\nRelated dependencies:")
+            for i, chunk in enumerate(self.dependencies, 1):
+                location = f"{chunk.file_path}:{chunk.start_line}-{chunk.end_line}"
+                name = chunk.class_name or chunk.file_path
+                lines.append(f"  {i}. {name} ({location})")
+
         return "\n".join(lines)
 
 
@@ -75,6 +84,8 @@ Guidelines:
         language: Optional[str] = None,
         chunk_type: Optional[str] = None,
         include_sources: bool = True,
+        include_dependencies: bool = False,
+        max_dependencies: int = 3,
     ) -> RAGResponse:
         """Query the codebase and generate an answer.
 
@@ -84,6 +95,8 @@ Guidelines:
             language: Filter by language
             chunk_type: Filter by chunk type
             include_sources: Include source chunks in response
+            include_dependencies: Fetch and include class dependencies
+            max_dependencies: Maximum dependencies per source chunk
 
         Returns:
             RAGResponse with answer and sources
@@ -102,8 +115,13 @@ Guidelines:
         chunks = [chunk for chunk, _ in results]
         scores = [score for _, score in results]
 
-        # Build context from chunks
-        context = self._build_context(chunks)
+        # Optionally fetch dependencies
+        dependencies = []
+        if include_dependencies:
+            dependencies = self._fetch_dependencies(chunks, max_dependencies)
+
+        # Build context from chunks and dependencies
+        context = self._build_context(chunks, dependencies)
 
         # Generate answer
         answer = self._generate_answer(question, context)
@@ -114,7 +132,191 @@ Guidelines:
             scores=scores,
             query=question,
             model=self.llm_model,
+            dependencies=dependencies if include_sources else [],
         )
+
+    def query_with_dependencies(
+        self,
+        question: str,
+        top_k: int = 5,
+        max_dependencies: int = 5,
+    ) -> RAGResponse:
+        """Query with automatic dependency resolution.
+
+        This is a convenience method that enables dependency-aware retrieval,
+        useful for questions about templates, schemas, or code that references
+        other classes.
+
+        Args:
+            question: User's question
+            top_k: Number of chunks to retrieve
+            max_dependencies: Maximum dependencies to include
+
+        Returns:
+            RAGResponse with answer, sources, and dependencies
+        """
+        return self.query(
+            question=question,
+            top_k=top_k,
+            include_dependencies=True,
+            max_dependencies=max_dependencies,
+        )
+
+    def query_class_with_context(
+        self,
+        class_name: str,
+        include_referencing: bool = True,
+        include_referenced: bool = True,
+    ) -> RAGResponse:
+        """Query for a specific class with full dependency context.
+
+        Args:
+            class_name: Class name to look up
+            include_referencing: Include chunks that reference this class
+            include_referenced: Include classes this class references
+
+        Returns:
+            RAGResponse with class context
+        """
+        # Get the class chunk
+        class_chunk = self.store.get_class_chunk(class_name)
+        if not class_chunk:
+            return RAGResponse(
+                answer=f"Class `{class_name}` not found in the codebase.",
+                sources=[],
+                scores=[],
+                query=f"Lookup: {class_name}",
+                model=self.llm_model,
+                dependencies=[],
+            )
+
+        sources = [class_chunk]
+        scores = [1.0]
+        dependencies = []
+
+        # Get chunks that reference this class (e.g., templates)
+        if include_referencing:
+            referencing = self.store.search_by_class_reference(class_name, top_k=5)
+            for chunk in referencing:
+                if chunk.id != class_chunk.id:
+                    dependencies.append(chunk)
+
+        # Get classes that this class references
+        if include_referenced and class_chunk.references:
+            for ref_class in class_chunk.references[:5]:
+                ref_chunk = self.store.get_class_chunk(ref_class)
+                if ref_chunk and ref_chunk.id != class_chunk.id:
+                    dependencies.append(ref_chunk)
+
+        # Build context
+        context = self._build_context(sources, dependencies)
+
+        # Generate comprehensive answer
+        question = f"Describe the {class_name} class, its purpose, and its relationships with other code."
+        answer = self._generate_answer(question, context)
+
+        return RAGResponse(
+            answer=answer,
+            sources=sources,
+            scores=scores,
+            query=f"Class lookup: {class_name}",
+            model=self.llm_model,
+            dependencies=dependencies,
+        )
+
+    def find_template_dependencies(
+        self,
+        template_path: str,
+    ) -> RAGResponse:
+        """Find all Java classes referenced by a template.
+
+        Args:
+            template_path: Path to the template file
+
+        Returns:
+            RAGResponse with the template and its Java dependencies
+        """
+        # Search for the template chunk
+        query_embedding = self.embedder.embed_text(f"template {template_path}")
+        results = self.store.search(
+            query_embedding=query_embedding,
+            top_k=1,
+            chunk_type="template",
+        )
+
+        if not results:
+            return RAGResponse(
+                answer=f"Template not found: {template_path}",
+                sources=[],
+                scores=[],
+                query=f"Template lookup: {template_path}",
+                model=self.llm_model,
+                dependencies=[],
+            )
+
+        template_chunk, score = results[0]
+        dependencies = []
+
+        # Get all referenced classes
+        if template_chunk.references:
+            for class_name in template_chunk.references:
+                class_chunk = self.store.get_class_chunk(class_name)
+                if class_chunk:
+                    dependencies.append(class_chunk)
+
+        # Build context
+        context = self._build_context([template_chunk], dependencies)
+
+        # Generate answer
+        question = f"Explain the template and its Java class dependencies."
+        answer = self._generate_answer(question, context)
+
+        return RAGResponse(
+            answer=answer,
+            sources=[template_chunk],
+            scores=[score],
+            query=f"Template dependencies: {template_path}",
+            model=self.llm_model,
+            dependencies=dependencies,
+        )
+
+    def _fetch_dependencies(
+        self,
+        chunks: list[CodeChunk],
+        max_per_chunk: int = 3,
+    ) -> list[CodeChunk]:
+        """Fetch dependencies for a list of chunks.
+
+        Args:
+            chunks: Source chunks to find dependencies for
+            max_per_chunk: Maximum dependencies per chunk
+
+        Returns:
+            List of dependency chunks (deduplicated)
+        """
+        seen_ids = {c.id for c in chunks}
+        dependencies = []
+
+        for chunk in chunks:
+            # Get classes referenced by this chunk
+            if chunk.references:
+                for class_name in chunk.references[:max_per_chunk]:
+                    dep_chunk = self.store.get_class_chunk(class_name)
+                    if dep_chunk and dep_chunk.id not in seen_ids:
+                        dependencies.append(dep_chunk)
+                        seen_ids.add(dep_chunk.id)
+
+            # For templates/documents, also find what references them
+            if chunk.chunk_type in ("template", "document") and chunk.class_name:
+                referencing = self.store.search_by_class_reference(
+                    chunk.class_name, top_k=max_per_chunk
+                )
+                for ref_chunk in referencing:
+                    if ref_chunk.id not in seen_ids:
+                        dependencies.append(ref_chunk)
+                        seen_ids.add(ref_chunk.id)
+
+        return dependencies
 
     def retrieve_only(
         self,
@@ -143,10 +345,15 @@ Guidelines:
             chunk_type=chunk_type,
         )
 
-    def _build_context(self, chunks: list[CodeChunk]) -> str:
-        """Build context string from retrieved chunks."""
+    def _build_context(
+        self,
+        chunks: list[CodeChunk],
+        dependencies: Optional[list[CodeChunk]] = None,
+    ) -> str:
+        """Build context string from retrieved chunks and dependencies."""
         context_parts = []
 
+        # Main chunks
         for i, chunk in enumerate(chunks, 1):
             location = f"{chunk.file_path}:{chunk.start_line}-{chunk.end_line}"
             header = f"--- Code Snippet {i} ({location}) ---"
@@ -154,9 +361,25 @@ Guidelines:
             if chunk.documentation:
                 header += f"\nDocumentation: {chunk.documentation}"
 
+            if chunk.references:
+                header += f"\nReferences: {', '.join(chunk.references[:5])}"
+
             context_parts.append(
                 f"{header}\n\n```{chunk.language}\n{chunk.content}\n```"
             )
+
+        # Dependencies section
+        if dependencies:
+            context_parts.append("\n--- Related Dependencies ---\n")
+            for i, chunk in enumerate(dependencies, 1):
+                location = f"{chunk.file_path}:{chunk.start_line}-{chunk.end_line}"
+                chunk_type = chunk.chunk_type or "code"
+                header = f"--- Dependency {i}: {chunk.class_name or chunk.file_path} ({chunk_type}) ---"
+                header += f"\nLocation: {location}"
+
+                context_parts.append(
+                    f"{header}\n\n```{chunk.language}\n{chunk.content}\n```"
+                )
 
         return "\n\n".join(context_parts)
 

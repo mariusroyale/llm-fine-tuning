@@ -108,9 +108,10 @@
 │   │    Strategy      │  src/converters/strategies/                              │
 │   │                  │                                                          │
 │   │  Choose one:     │                                                          │
-│   │  • code_explanation  → "Explain this code" prompts                          │
-│   │  • code_generation   → "Write code that does X" prompts                     │
-│   │  • code_review       → "Review this code" prompts                           │
+│   │  • code_explanation    → "Explain this code" prompts                        │
+│   │  • code_generation     → "Write code that does X" prompts                   │
+│   │  • code_review         → "Review this code" prompts                         │
+│   │  • template_generation → "Generate JSON template from Java" prompts         │
 │   └────────┬─────────┘                                                          │
 │            │                                                                    │
 │            ▼                                                                    │
@@ -295,6 +296,8 @@ Use RAG to query your codebase with natural language:
 │   │  - Reuses JavaExtractor & GenericExtractor                                  │
 │   │  - Splits code into semantic chunks (classes, methods)                      │
 │   │  - Preserves metadata (file path, line numbers, docs)                       │
+│   │  - Indexes JSON templates with class reference detection                    │
+│   │  - Extracts class dependencies from imports                                 │
 │   └────────┬─────────┘                                                          │
 │            │                                                                    │
 │            ▼                                                                    │
@@ -410,6 +413,9 @@ Use RAG to query your codebase with natural language:
 │  --language java     Filter by language                                         │
 │  --retrieve-only     Show chunks without LLM generation                         │
 │  --reset             Reindex from scratch                                       │
+│  --with-deps         Include class dependencies in context                      │
+│  --class-lookup X    Look up class X with all relationships                     │
+│  --template-deps X   Find Java classes referenced by template X                 │
 │                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────┘
 
@@ -490,6 +496,100 @@ Use RAG to query your codebase with natural language:
 │  Step 3: Query with your fine-tuned model                                       │
 │    docker compose exec app python scripts/query_codebase.py -i \                │
 │      --model "models/your-tuned-model-xxxx"                                     │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+# Template Generation & Dependency-Aware Features
+
+Train the model to generate JSON templates from Java classes, and query with full dependency context.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  TEMPLATE GENERATION TRAINING                                                   │
+│  python scripts/generate_template_training.py -j data/raw/java -t data/raw/templates │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+   Input: Java Class                    Output: JSON Template
+   ┌─────────────────────────┐          ┌─────────────────────────┐
+   │ public class UserService │   →     │ {                       │
+   │   extends BaseService   │   →     │   "name": "UserService",│
+   │   implements IUserOps { │   →     │   "extends": "BaseService",
+   │                         │   →     │   "implements": ["IUserOps"],
+   │   private UserRepo repo;│   →     │   "properties": {       │
+   │   ...                   │   →     │     "repo": {           │
+   │ }                       │   →     │       "$ref": "UserRepo"│
+   └─────────────────────────┘          │     }                   │
+                                        │   },                    │
+                                        │   "dependencies": [     │
+                                        │     "UserRepo",         │
+                                        │     "BaseService"       │
+                                        │   ]                     │
+                                        │ }                       │
+                                        └─────────────────────────┘
+
+   The script:
+   1. Extracts all Java classes from java directory
+   2. Loads existing JSON templates from templates directory
+   3. Matches classes to templates by:
+      - Exact name (UserService.java → UserService.json)
+      - Class references found in templates
+      - Manual mappings file (optional)
+   4. Generates training data:
+      - User: "Generate template for this Java class: [code]"
+      - Model: "Here's the template: [JSON]"
+
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  DEPENDENCY-AWARE RAG QUERIES                                                   │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+   Regular query:              Dependency-aware query:
+   ┌──────────────────┐       ┌──────────────────┐
+   │ Retrieves only   │       │ Retrieves chunks │
+   │ matching chunks  │       │ + their deps     │
+   └────────┬─────────┘       └────────┬─────────┘
+            │                          │
+            ▼                          ▼
+   ┌──────────────────┐       ┌──────────────────┐
+   │ AuthService.java │       │ AuthService.java │
+   │                  │       │ + UserRepo.java  │
+   │                  │       │ + TokenService   │
+   │                  │       │ + user-template  │
+   └──────────────────┘       └──────────────────┘
+
+   Enable with: --with-deps
+
+   Special query modes:
+
+   # Look up a class with all its relationships
+   python scripts/query_codebase.py --class-lookup UserService
+
+   # Find Java classes referenced by a template
+   python scripts/query_codebase.py --template-deps "config/user.json"
+
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  CROSS-REFERENCE DETECTION                                                      │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  When indexing, the chunker automatically detects:                              │
+│                                                                                 │
+│  Java → Java references:                                                        │
+│    - Import statements (same project classes)                                   │
+│    - extends/implements clauses                                                 │
+│    - Field types                                                                │
+│    - Method parameter/return types                                              │
+│                                                                                 │
+│  JSON → Java references:                                                        │
+│    - PascalCase identifiers that match known classes                            │
+│    - Values in "$ref", "type", "class" fields                                   │
+│                                                                                 │
+│  This enables bidirectional queries:                                            │
+│    "What templates use UserService?" → finds templates referencing it           │
+│    "What Java classes does this template need?" → finds referenced classes      │
 │                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
