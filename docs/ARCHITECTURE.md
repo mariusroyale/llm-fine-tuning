@@ -365,23 +365,20 @@ Run everything with Docker—no local PostgreSQL installation needed.
 │  DOCKER QUICK START                                                             │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                 │
-│  # 1. Start services (PostgreSQL + pgvector)                                    │
-│  docker-compose up -d pgvector                                                  │
+│  # 1. Start everything (builds app + starts pgvector)                           │
+│  docker compose up -d                                                           │
 │                                                                                 │
-│  # 2. Build the app                                                             │
-│  docker-compose build app                                                       │
+│  # 2. Index your codebase                                                       │
+│  docker compose exec app python scripts/index_codebase.py -s data/raw           │
 │                                                                                 │
-│  # 3. Index your codebase                                                       │
-│  docker-compose run --rm app python scripts/index_codebase.py -s data/raw       │
+│  # 3. Query                                                                     │
+│  docker compose exec app python scripts/query_codebase.py -i                    │
 │                                                                                 │
-│  # 4. Query                                                                     │
-│  docker-compose run --rm app python scripts/query_codebase.py -i                │
-│                                                                                 │
-│  # 5. Fine-tuning (prepare data)                                                │
-│  docker-compose run --rm app python scripts/prepare_data.py                     │
+│  # 4. Fine-tuning (prepare data)                                                │
+│  docker compose exec app python scripts/prepare_data.py                         │
 │                                                                                 │
 │  # Stop services                                                                │
-│  docker-compose down                                                            │
+│  docker compose down                                                            │
 │                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────┘
 
