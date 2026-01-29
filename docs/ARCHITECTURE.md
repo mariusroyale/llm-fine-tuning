@@ -10,56 +10,55 @@
                               YOUR CODEBASE
                               data/raw/
                                    │
-                                   ▼
          ┌─────────────────────────┴─────────────────────────┐
          │                                                   │
          ▼                                                   ▼
 ┌─────────────────────┐                         ┌─────────────────────┐
-│   FINE-TUNING PATH  │                         │      RAG PATH       │
-│                     │                         │                     │
-│ Teaches model your  │                         │ Retrieves actual    │
-│ coding style        │                         │ code for queries    │
-└─────────────────────┘                         └─────────────────────┘
-         │                                                   │
-         ▼                                                   ▼
-┌─────────────────────┐                         ┌─────────────────────┐
-│ 1. Prepare Data     │                         │ 1. Index Codebase   │
-│                     │                         │                     │
-│ prepare_data.py     │                         │ index_codebase.py   │
-│ - Extract code      │                         │ - Chunk code        │
-│ - Generate prompts  │                         │ - Embed chunks      │
-│ - Output JSONL      │                         │ - Store in pgvector │
-└─────────────────────┘                         └─────────────────────┘
-         │                                                   │
-         ▼                                                   ▼
-┌─────────────────────┐                         ┌─────────────────────┐
-│ 2. Train            │                         │ 2. Query            │
-│                     │                         │                     │
-│ run_training.py     │                         │ query_codebase.py   │
-│ - Upload to GCS     │                         │ - Embed question    │
-│ - Fine-tune on      │                         │ - Retrieve chunks   │
-│   Vertex AI         │                         │ - LLM generates     │
-│ - Monitor job       │                         │   answer            │
-└─────────────────────┘                         └─────────────────────┘
-         │                                                   │
+│   FINE-TUNING       │                         │      RAG            │
+│   (one-time)        │                         │   (reindex on       │
+│                     │                         │    code changes)    │
+│ Teaches model your  │                         │                     │
+│ coding style        │                         │ Retrieves actual    │
+└─────────────────────┘                         │ code for queries    │
+         │                                      └─────────────────────┘
          ▼                                                   │
 ┌─────────────────────┐                                      │
-│ 3. Test             │                                      │
-│                     │                                      │
-│ test_model.py       │                                      │
-│ - Query tuned model │                                      │
-│ - Compare with base │                                      │
+│ 1. prepare_data.py  │                                      │
+│ 2. run_training.py  │                                      │
+│ 3. test_model.py    │                                      │
 └─────────────────────┘                                      │
          │                                                   │
-         └─────────────────────────┬─────────────────────────┘
-                                   │
-                                   ▼
-                         ┌─────────────────────┐
-                         │   YOUR QUESTIONS    │
-                         │                     │
-                         │ "Is X implemented?" │
-                         │ "Write code like Y" │
-                         └─────────────────────┘
+         │  Creates tuned model                              │
+         │                                                   ▼
+         │                                      ┌─────────────────────┐
+         │                                      │ index_codebase.py   │
+         │                                      │ - Chunk code        │
+         │                                      │ - Embed + store     │
+         │                                      └─────────────────────┘
+         │                                                   │
+         └──────────────────┐       ┌────────────────────────┘
+                            │       │
+                            ▼       ▼
+                   ┌─────────────────────────┐
+                   │   COMBINED QUERY        │
+                   │                         │
+                   │   query_codebase.py     │
+                   │   --model YOUR_MODEL    │
+                   │                         │
+                   │   RAG retrieves code    │
+                   │         +               │
+                   │   Fine-tuned model      │
+                   │   generates answer      │
+                   └─────────────────────────┘
+                              │
+                              ▼
+                   ┌─────────────────────────┐
+                   │   ACCURATE ANSWERS      │
+                   │                         │
+                   │ • Real code snippets    │
+                   │ • Knows your patterns   │
+                   │ • File/line citations   │
+                   └─────────────────────────┘
 
 
 ┌─────────────────────────────────────────────────────────────────────────────────┐
@@ -416,22 +415,81 @@ Use RAG to query your codebase with natural language:
 
 
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│  FINE-TUNING vs RAG: WHEN TO USE WHICH                                          │
+│  FINE-TUNING vs RAG vs COMBINED                                                 │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                 │
-│  FINE-TUNING (scripts/run_training.py)                                          │
-│  ├── Best for: Teaching model your coding style/patterns                        │
-│  ├── Use when: You want the model to write code like your team                  │
-│  └── Trade-off: Requires retraining when codebase changes                       │
+│  OPTION 1: RAG Only (quick start)                                               │
+│  ├── Query → Retrieve code → Base Gemini → Answer                               │
+│  ├── Pro: No training needed, accurate code retrieval                           │
+│  └── Con: Model doesn't know your domain terminology                            │
 │                                                                                 │
-│  RAG (scripts/query_codebase.py)                                                │
-│  ├── Best for: Answering questions about existing code                          │
-│  ├── Use when: "Is X implemented?" / "Where is Y handled?"                      │
-│  └── Trade-off: Just reindex when codebase changes (fast)                       │
+│  OPTION 2: Fine-tuning Only                                                     │
+│  ├── Query → Fine-tuned model → Answer                                          │
+│  ├── Pro: Model knows your coding style                                         │
+│  └── Con: May hallucinate code, needs retraining on changes                     │
 │                                                                                 │
-│  COMBINED (recommended for production)                                          │
-│  ├── Fine-tune for coding style + domain knowledge                              │
-│  └── RAG for accurate code retrieval + citations                                │
+│  OPTION 3: Combined (recommended)                                               │
+│  ├── Query → Retrieve code → Fine-tuned model → Answer                          │
+│  ├── Pro: Best of both worlds                                                   │
+│  └── Model knows your style + sees actual code = accurate & contextual          │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  COMBINED FLOW (RAG + Fine-tuned Model)                                         │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+   User Query: "How does our authentication work?"
+          │
+          ▼
+   ┌──────────────────┐
+   │  1. RETRIEVE     │  RAG retrieves actual code chunks
+   │                  │  from your indexed codebase
+   │  index_codebase  │
+   │  + pgvector      │
+   └────────┬─────────┘
+            │
+            ▼
+   ┌──────────────────┐
+   │  2. GENERATE     │  Fine-tuned model receives:
+   │                  │  - Your question
+   │  Fine-tuned      │  - Retrieved code snippets
+   │  Gemini          │
+   │                  │  Model understands your domain
+   │                  │  + sees actual code = best answer
+   └────────┬─────────┘
+            │
+            ▼
+   ┌──────────────────────────────────────────────────────────────────┐
+   │  Response:                                                       │
+   │                                                                  │
+   │  "Our authentication uses JWT tokens via AuthService.           │
+   │   The flow is: login() → validateCredentials() → generateToken() │
+   │                                                                  │
+   │   [Actual code snippet from your codebase]                       │
+   │                                                                  │
+   │   This follows our standard service pattern..."                  │
+   │   ↑                                                              │
+   │   Model knows YOUR patterns because it was fine-tuned            │
+   └──────────────────────────────────────────────────────────────────┘
+
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  HOW TO USE COMBINED MODE                                                       │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  Step 1: Fine-tune your model (one-time)                                        │
+│    docker compose exec app python scripts/prepare_data.py                       │
+│    docker compose exec app python scripts/run_training.py                       │
+│    # Note your tuned model ID: models/your-tuned-model-xxxx                     │
+│                                                                                 │
+│  Step 2: Index your codebase (rerun when code changes)                          │
+│    docker compose exec app python scripts/index_codebase.py -s data/raw         │
+│                                                                                 │
+│  Step 3: Query with your fine-tuned model                                       │
+│    docker compose exec app python scripts/query_codebase.py -i \                │
+│      --model "models/your-tuned-model-xxxx"                                     │
 │                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
