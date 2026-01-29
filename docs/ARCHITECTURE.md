@@ -65,23 +65,31 @@
 │  QUICK REFERENCE                                                                │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                 │
-│  RAG (query existing code):                                                     │
-│    docker compose exec app python scripts/index_codebase.py -s data/raw         │
-│    docker compose exec app python scripts/query_codebase.py -i                  │
+│  1. DATA INGESTION - Add your source code and templates                         │
+│     data/raw/                                                                   │
+│       ├── java/           # Java source files                                   │
+│       ├── templates/      # JSON templates (optional)                           │
+│       └── docs/           # Documentation (optional)                            │
 │                                                                                 │
-│  Fine-tuning (teach model your style):                                          │
-│    docker compose exec app python scripts/prepare_data.py                       │
-│    docker compose exec app python scripts/run_training.py                       │
-│    docker compose exec app python scripts/test_model.py -m MODEL -i             │
+│  2. START SERVICES                                                              │
+│     docker compose up -d                                                        │
 │                                                                                 │
-│  Template generation training (Java → JSON templates):                          │
-│    docker compose exec app python scripts/generate_template_training.py \       │
-│      -j data/raw/java -t data/raw/templates -o data/training                    │
+│  3. INDEX CODEBASE - Build searchable vector database                           │
+│     docker compose exec app python scripts/index_codebase.py -s data/raw        │
 │                                                                                 │
-│  Dependency-aware queries:                                                      │
-│    docker compose exec app python scripts/query_codebase.py -q "..." --with-deps│
-│    docker compose exec app python scripts/query_codebase.py --class-lookup NAME │
-│    docker compose exec app python scripts/query_codebase.py --template-deps FILE│
+│  4. QUERY CODEBASE - Ask questions about your code                              │
+│     docker compose exec app python scripts/query_codebase.py -i                 │
+│     docker compose exec app python scripts/query_codebase.py -q "..." --with-deps│
+│     docker compose exec app python scripts/query_codebase.py --class-lookup NAME│
+│                                                                                 │
+│  5. (Optional) FINE-TUNING - Train model on your coding style                   │
+│     docker compose exec app python scripts/prepare_data.py                      │
+│     docker compose exec app python scripts/run_training.py                      │
+│     docker compose exec app python scripts/test_model.py -m MODEL -i            │
+│                                                                                 │
+│  6. (Optional) TEMPLATE TRAINING - Train model to generate your JSON templates  │
+│     docker compose exec app python scripts/generate_template_training.py \      │
+│       -j data/raw/java -t data/raw/templates -o data/training                   │
 │                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
