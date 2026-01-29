@@ -1,0 +1,28 @@
+# Google Cloud & Vertex AI
+google-cloud-aiplatform>=1.71.0
+google-cloud-storage>=2.18.0
+google-auth>=2.35.0
+
+# Data processing
+javalang>=0.13.0          # Java source parsing
+tree-sitter>=0.23.0       # Multi-language parsing
+tree-sitter-java>=0.23.0  # Java grammar
+
+# Data handling
+pandas>=2.2.0
+jsonlines>=4.0.0
+pyyaml>=6.0.2
+
+# CLI and utilities
+click>=8.1.7
+rich>=13.9.0              # Beautiful terminal output
+tqdm>=4.67.0              # Progress bars
+
+# Validation
+pydantic>=2.9.0
+jsonschema>=4.23.0
+
+# Development
+pytest>=8.3.0
+black>=24.10.0
+ruff>=0.7.0
