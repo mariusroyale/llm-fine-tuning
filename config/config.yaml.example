@@ -2,7 +2,7 @@
 gcp:
   project_id: "YOUR_PROJECT_ID" # Your GCP project ID
   location: "us-central1" # Vertex AI region
-  staging_bucket: "gs://YOUR_BUCKET_NAME" # GCS bucket for training data
+  staging_bucket: "gs://YOUR_BUCKET_NAME" # GCS bucket for training data (only needed for fine-tuning)
 
 # Fine-Tuning Configuration
 training:
@@ -114,12 +114,14 @@ rag:
     min_chunk_lines: 3 # Skip tiny chunks
 
   # PostgreSQL + pgvector database settings
+  # Note: When running in Docker, host should be "pgvector" (service name)
+  # When running locally, use "localhost"
   pgvector:
-    host: "localhost"
+    host: "pgvector"  # Use "pgvector" for Docker, "localhost" for local
     port: 5432
     database: "codebase_rag"
     user: "postgres"
-    password: "" # Use PGPASSWORD env var for security
+    password: "" # Use PGPASSWORD env var for security (set in docker-compose.yml)
 
   # Optional: Custom system prompt for RAG queries
   system_prompt: |

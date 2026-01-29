@@ -70,8 +70,11 @@ gcloud auth application-default login
 
 # Edit config
 cp config/config.yaml.example config/config.yaml
-# Set your project_id and staging_bucket
+# Set your project_id
+# Set staging_bucket ONLY if you plan to use fine-tuning (RAG works without it)
 ```
+
+**Note:** The `staging_bucket` is only required for fine-tuning. Vertex AI requires training data to be in GCS. If you only want to use RAG (codebase querying), you can skip the bucket configuration.
 
 ### 2. Add Your Code
 
@@ -103,6 +106,8 @@ docker compose exec app python scripts/query_codebase.py -q "How is authenticati
 
 ### Fine-Tuning: Train Custom Model
 
+**⚠️ Requires GCS bucket:** Fine-tuning requires Google Cloud Storage because Vertex AI needs training data in GCS. This is a Google Cloud service requirement, not optional.
+
 ```bash
 # Prepare training data
 docker compose exec app python scripts/prepare_data.py
@@ -113,6 +118,8 @@ docker compose exec app python scripts/run_training.py
 # Test your model
 docker compose exec app python scripts/test_model.py -m "your-model-id" -i
 ```
+
+**Alternative:** If you want to avoid GCS entirely, you can use RAG-only mode (no fine-tuning needed).
 
 ### Combined: RAG + Fine-Tuned Model
 

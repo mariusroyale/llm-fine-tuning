@@ -24,8 +24,9 @@ services:
     volumes:
       # Mount source code for development
       - .:/app
-      # Mount GCP credentials
-      - ${GOOGLE_APPLICATION_CREDENTIALS:-~/.config/gcloud}:/root/.config/gcloud:ro
+      # Mount GCP credentials (use absolute path to avoid snap Docker path issues)
+      # If using snap Docker, ${HOME} might point to snap directory, so use explicit path
+      - /home/miordache/.config/gcloud:/root/.config/gcloud:ro
     environment:
       - GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
       - PGHOST=pgvector

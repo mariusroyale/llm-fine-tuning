@@ -252,7 +252,8 @@
 │  gcp:                                                                           │
 │    project_id: "your-project"                                                   │
 │    location: "us-central1"                                                      │
-│    staging_bucket: "gs://your-bucket"                                           │
+│    staging_bucket: "gs://your-bucket"  # REQUIRED for fine-tuning only          │
+│                                         # RAG works without GCS                 │
 │                                                                                 │
 │  training:                                                                      │
 │    base_model: "gemini-2.5-pro"                                               │
@@ -262,6 +263,10 @@
 │                                                                                 │
 │  strategy:                                                                      │
 │    system_instruction: "You are a code expert..."                               │
+│                                                                                 │
+│  NOTE: staging_bucket is ONLY needed for fine-tuning. Vertex AI requires       │
+│        training data in GCS - this is a Google Cloud service requirement.       │
+│        RAG uses local pgvector storage and doesn't need GCS.                    │
 │                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────┘
 

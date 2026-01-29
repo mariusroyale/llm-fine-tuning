@@ -27,9 +27,9 @@ console = Console()
 @click.option(
     "--config",
     "-c",
-    type=click.Path(exists=True, path_type=Path),
-    default=Path("config/config.yaml"),
-    help="Configuration file",
+    type=str,
+    default=None,
+    help="Configuration file path (default: config/config.yaml)",
 )
 @click.option(
     "--query",
@@ -95,7 +95,7 @@ console = Console()
     help="Find Java dependencies for a specific template",
 )
 def main(
-    config: Path,
+    config: str | None,
     query: str,
     interactive: bool,
     top_k: int,
@@ -138,9 +138,34 @@ def main(
         )
     )
 
+    # Resolve config path
+    if config is None:
+        # Try default location relative to script directory
+        script_dir = Path(__file__).parent.parent
+        config_path = script_dir / "config" / "config.yaml"
+    else:
+        config_path = Path(config)
+    
+    # Check if config file exists
+    if not config_path.exists():
+        console.print(f"[red]Error: Configuration file not found: {config_path}[/red]")
+        console.print(f"\n[bold]Tried to find config at:[/bold] {config_path.absolute()}")
+        console.print("\nPlease create the configuration file:")
+        console.print(f"  1. Create directory: mkdir -p {config_path.parent}")
+        console.print(f"  2. Create {config_path} with your GCP settings")
+        console.print(f"  3. At minimum, set your GCP project_id in the config file")
+        console.print("\nOr specify a different config file with --config /path/to/config.yaml")
+        return
+    
+    config = config_path
+
     # Load configuration
-    with open(config) as f:
-        cfg = yaml.safe_load(f)
+    try:
+        with open(config) as f:
+            cfg = yaml.safe_load(f)
+    except Exception as e:
+        console.print(f"[red]Error loading configuration file: {e}[/red]")
+        return
 
     gcp_config = cfg.get("gcp", {})
     rag_config = cfg.get("rag", {})
