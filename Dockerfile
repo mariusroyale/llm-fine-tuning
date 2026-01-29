@@ -19,5 +19,5 @@ COPY . .
 # Make scripts executable
 RUN chmod +x scripts/*.py
 
-# Default command (can be overridden)
-CMD ["python", "-c", "print('Use docker-compose to run specific commands')"]
+# Keep container running for interactive use
+CMD ["tail", "-f", "/dev/null"]
