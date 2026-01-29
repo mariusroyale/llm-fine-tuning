@@ -3,6 +3,7 @@
 
 import sys
 from pathlib import Path
+from typing import Optional
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -94,6 +95,11 @@ console = Console()
     default=None,
     help="Find Java dependencies for a specific template",
 )
+@click.option(
+    "--list-classes",
+    is_flag=True,
+    help="List all indexed Java classes",
+)
 def main(
     config: str | None,
     query: str,
@@ -106,6 +112,7 @@ def main(
     with_deps: bool,
     class_lookup: str,
     template_deps: str,
+    list_classes: bool,
 ):
     """Query your codebase using natural language.
 
@@ -248,6 +255,7 @@ def main(
             show_sources=show_sources,
             retrieve_only=retrieve_only,
             with_deps=with_deps,
+            store=store,  # Pass store for list queries
         )
         store.close()
         return
@@ -256,6 +264,7 @@ def main(
     if interactive:
         run_interactive_session(
             retriever=retriever,
+            store=store,
             top_k=top_k,
             language=language,
             show_sources=show_sources,
@@ -272,6 +281,39 @@ def main(
     store.close()
 
 
+def run_list_classes(store: PgVectorStore, language: Optional[str] = None):
+    """List all indexed classes."""
+    classes = store.list_classes(language=language)
+    
+    if not classes:
+        console.print("[yellow]No classes found in the database.[/yellow]")
+        return
+    
+    # Group by language
+    by_language = {}
+    for cls in classes:
+        lang = cls.language
+        if lang not in by_language:
+            by_language[lang] = []
+        by_language[lang].append(cls)
+    
+    console.print(f"\n[bold]Found {len(classes)} indexed classes:[/bold]\n")
+    
+    for lang in sorted(by_language.keys()):
+        lang_classes = by_language[lang]
+        console.print(f"[bold cyan]{lang.upper()} Classes ({len(lang_classes)}):[/bold cyan]")
+        
+        # Sort by class name
+        lang_classes.sort(key=lambda c: c.class_name or c.file_path)
+        
+        for cls in lang_classes:
+            class_name = cls.class_name or Path(cls.file_path).stem
+            location = f"{cls.file_path}:{cls.start_line}-{cls.end_line}"
+            console.print(f"  • {class_name} ({location})")
+        
+        console.print()
+
+
 def run_single_query(
     retriever: CodeRetriever,
     query: str,
@@ -280,20 +322,113 @@ def run_single_query(
     show_sources: bool,
     retrieve_only: bool,
     with_deps: bool = False,
+    store: Optional[PgVectorStore] = None,
 ):
     """Run a single query."""
     console.print(f"[bold]Query:[/bold] {query}\n")
 
+    # Check if query is asking to list classes
+    query_lower = query.lower()
+    list_classes_patterns = [
+        "list all",
+        "list the",
+        "show all",
+        "show the",
+        "which are",
+        "what are",
+        "how many",
+        "count",
+    ]
+    class_keywords = ["class", "classes", "java class", "java classes"]
+    
+    is_list_query = any(pattern in query_lower for pattern in list_classes_patterns)
+    has_class_keyword = any(keyword in query_lower for keyword in class_keywords)
+    
+    # If asking to list classes and we have store access, use direct query
+    if is_list_query and has_class_keyword and store:
+        # Extract language if specified
+        detected_language = language
+        if not detected_language:
+            if "java" in query_lower:
+                detected_language = "java"
+            elif "python" in query_lower:
+                detected_language = "python"
+            elif "javascript" in query_lower or "typescript" in query_lower:
+                detected_language = "javascript" if "javascript" in query_lower else "typescript"
+        
+        classes = store.list_classes(language=detected_language)
+        
+        if classes:
+            console.print(f"[bold green]Found {len(classes)} indexed classes:[/bold green]\n")
+            
+            # Group by language
+            by_language = {}
+            for cls in classes:
+                lang = cls.language
+                if lang not in by_language:
+                    by_language[lang] = []
+                by_language[lang].append(cls)
+            
+            for lang in sorted(by_language.keys()):
+                lang_classes = by_language[lang]
+                console.print(f"[bold cyan]{lang.upper()} Classes ({len(lang_classes)}):[/bold cyan]")
+                
+                # Sort by class name
+                lang_classes.sort(key=lambda c: c.class_name or c.file_path)
+                
+                for cls in lang_classes:
+                    class_name = cls.class_name or Path(cls.file_path).stem
+                    location = f"{cls.file_path}:{cls.start_line}-{cls.end_line}"
+                    console.print(f"  • {class_name} ({location})")
+                
+                console.print()
+            
+            # Also generate a natural language answer using RAG
+            # Use a query that will trigger the list detection in the retriever
+            console.print("\n[bold]Summary:[/bold]")
+            # Use "list" and "indexed" keywords to trigger complete list detection
+            summary_query = f"List all {len(classes)} classes indexed in the codebase"
+            if with_deps:
+                response = retriever.query_with_dependencies(
+                    summary_query,
+                    top_k=min(20, len(classes))
+                )
+            else:
+                response = retriever.query(
+                    summary_query,
+                    top_k=min(20, len(classes)),
+                    language=detected_language,
+                    chunk_type="class"  # Force class chunk type to trigger list detection
+                )
+            console.print(Panel(Markdown(response.answer)))
+            return
+
+    # Determine chunk_type and adjust top_k for class queries
+    chunk_type = None
+    adjusted_top_k = top_k
+    
+    query_lower = query.lower()
+    if "class" in query_lower or "classes" in query_lower:
+        chunk_type = "class"
+        # Increase top_k for class queries to get more context
+        adjusted_top_k = max(top_k * 3, 20)
+
     if retrieve_only:
         # Just retrieve and display chunks
-        results = retriever.retrieve_only(query, top_k=top_k, language=language)
+        results = retriever.retrieve_only(query, top_k=adjusted_top_k, language=language)
         display_chunks(results, show_code=show_sources)
     else:
         # Full RAG: retrieve + generate
         if with_deps:
-            response = retriever.query_with_dependencies(query, top_k=top_k)
+            response = retriever.query_with_dependencies(query, top_k=adjusted_top_k)
         else:
-            response = retriever.query(query, top_k=top_k, language=language)
+            # Use chunk_type filter for class queries
+            response = retriever.query(
+                query, 
+                top_k=adjusted_top_k, 
+                language=language,
+                chunk_type=chunk_type
+            )
 
         console.print("[bold]Answer:[/bold]")
         console.print(Panel(Markdown(response.answer)))
@@ -438,6 +573,7 @@ def display_chunks(results: list, show_code: bool = True):
 
 def run_interactive_session(
     retriever: CodeRetriever,
+    store: PgVectorStore,
     top_k: int,
     language: str,
     show_sources: bool,
@@ -467,6 +603,30 @@ def run_interactive_session(
             interactive.clear_history()
             console.print("[dim]Conversation cleared[/dim]")
             continue
+        
+        # Detect if query is about classes and adjust retrieval
+        query_lower = user_input.lower()
+        class_keywords = ["class", "classes"]
+        is_class_query = any(keyword in query_lower for keyword in class_keywords)
+        
+        chunk_type = None
+        adjusted_top_k = top_k
+        detected_language = language
+        
+        if is_class_query:
+            chunk_type = "class"
+            adjusted_top_k = max(top_k * 3, 20)  # Get more classes
+            
+            # Extract language from query if not specified
+            if not detected_language:
+                if "java" in query_lower:
+                    detected_language = "java"
+                elif "python" in query_lower:
+                    detected_language = "python"
+                elif "javascript" in query_lower:
+                    detected_language = "javascript"
+                elif "typescript" in query_lower:
+                    detected_language = "typescript"
 
         if user_input.lower() == "sources":
             show_src = not show_src
@@ -476,8 +636,16 @@ def run_interactive_session(
         if not user_input.strip():
             continue
 
-        # Query
-        response = interactive.query(user_input, top_k=top_k)
+        # Query with appropriate filters for class queries
+        if is_class_query:
+            response = retriever.query(
+                user_input, 
+                top_k=adjusted_top_k, 
+                language=detected_language,
+                chunk_type=chunk_type
+            )
+        else:
+            response = interactive.query(user_input, top_k=top_k)
 
         console.print()
         console.print("[bold green]Assistant:[/bold green]")

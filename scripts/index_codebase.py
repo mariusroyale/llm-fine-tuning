@@ -224,10 +224,68 @@ def main(
         model=rag_config.get("embedding_model", "text-embedding-005"),
     )
 
-    chunk_embeddings = embedder.embed_chunks(chunks, batch_size=batch_size)
+    chunk_embeddings, skipped_chunks = embedder.embed_chunks(chunks, batch_size=batch_size)
+    
+    # Extract chunks and embeddings (already filtered - None embeddings removed)
+    filtered_chunks = [chunk for chunk, _ in chunk_embeddings]
     embeddings = [emb for _, emb in chunk_embeddings]
 
     console.print(f"[green]Generated {len(embeddings)} embeddings[/green]")
+    
+    # Display skipped chunks statistics
+    if skipped_chunks:
+        console.print(f"\n[yellow]⚠ Skipped {len(skipped_chunks)} chunks:[/yellow]")
+        
+        # Group by reason
+        by_reason = {}
+        by_type = {}
+        total_tokens_skipped = 0
+        
+        for skipped in skipped_chunks:
+            reason = skipped['reason']
+            chunk_type = skipped['chunk_type']
+            
+            by_reason[reason] = by_reason.get(reason, 0) + 1
+            by_type[chunk_type] = by_type.get(chunk_type, 0) + 1
+            total_tokens_skipped += skipped['token_count']
+        
+        # Show summary table
+        skip_table = Table(title="Skipped Chunks Summary")
+        skip_table.add_column("Reason", style="yellow")
+        skip_table.add_column("Count", style="red")
+        
+        for reason, count in sorted(by_reason.items(), key=lambda x: x[1], reverse=True):
+            skip_table.add_row(reason, str(count))
+        
+        console.print(skip_table)
+        
+        # Show breakdown by type
+        if len(by_type) > 1:
+            type_table = Table(title="Skipped by Chunk Type")
+            type_table.add_column("Type", style="cyan")
+            type_table.add_column("Count", style="red")
+            
+            for chunk_type, count in sorted(by_type.items(), key=lambda x: x[1], reverse=True):
+                type_table.add_row(chunk_type, str(count))
+            
+            console.print(type_table)
+        
+        # Show largest skipped chunks
+        largest_skipped = sorted(skipped_chunks, key=lambda x: x['token_count'], reverse=True)[:5]
+        console.print(f"\n[bold yellow]Top 5 Largest Skipped Chunks:[/bold yellow]")
+        for i, skipped in enumerate(largest_skipped, 1):
+            chunk = skipped['chunk']
+            console.print(
+                f"  {i}. {chunk.file_path}:{chunk.start_line}-{chunk.end_line} "
+                f"({skipped['chunk_type']}) - {skipped['token_count']:,} tokens "
+                f"({skipped['size_chars']:,} chars)"
+            )
+        
+        console.print(f"\n[dim]Total tokens skipped: {total_tokens_skipped:,}[/dim]")
+        console.print(
+            "[dim]Tip: Large JSON templates or very long code files may exceed the 15,000 token limit. "
+            "Consider splitting them into smaller chunks.[/dim]"
+        )
 
     # Step 3: Store in vector database
     console.print("\n[bold]Step 3: Storing in vector database...[/bold]")
@@ -256,7 +314,7 @@ def main(
             console=console,
         ) as progress:
             task = progress.add_task("Inserting chunks...", total=None)
-            count = store.upsert(chunks, embeddings)
+            count = store.upsert(filtered_chunks, embeddings)
             progress.update(task, completed=True)
 
         console.print(f"[green]Indexed {count} chunks[/green]")

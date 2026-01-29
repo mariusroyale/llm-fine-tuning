@@ -4,6 +4,7 @@ import json
 import os
 from typing import Optional
 
+import numpy as np
 import psycopg
 from pgvector.psycopg import register_vector
 
@@ -52,6 +53,10 @@ class PgVectorStore:
     def connect(self) -> None:
         """Establish database connection."""
         self._conn = psycopg.connect(self.connection_string)
+        # Enable pgvector extension before registering
+        with self._conn.cursor() as cur:
+            cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            self._conn.commit()
         register_vector(self._conn)
 
     def close(self) -> None:
@@ -74,6 +79,7 @@ class PgVectorStore:
             cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
 
             # Create table
+            # Note: "references" is a reserved keyword, so we quote it
             cur.execute(f"""
                 CREATE TABLE IF NOT EXISTS {self.table_name} (
                     id TEXT PRIMARY KEY,
@@ -87,7 +93,7 @@ class PgVectorStore:
                     class_name TEXT,
                     method_name TEXT,
                     documentation TEXT,
-                    references TEXT[],
+                    "references" TEXT[],
                     metadata JSONB,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -134,11 +140,14 @@ class PgVectorStore:
 
         with self._conn.cursor() as cur:
             for chunk, embedding in zip(chunks, embeddings):
+                # Convert embedding to numpy array for pgvector adapter
+                embedding_vec = np.array(embedding, dtype=np.float32)
+                
                 cur.execute(
                     f"""
                     INSERT INTO {self.table_name}
                     (id, content, embedding, language, chunk_type, file_path,
-                     start_line, end_line, class_name, method_name, documentation, references, metadata)
+                     start_line, end_line, class_name, method_name, documentation, "references", metadata)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (id) DO UPDATE SET
                         content = EXCLUDED.content,
@@ -151,13 +160,13 @@ class PgVectorStore:
                         class_name = EXCLUDED.class_name,
                         method_name = EXCLUDED.method_name,
                         documentation = EXCLUDED.documentation,
-                        references = EXCLUDED.references,
+                        "references" = EXCLUDED."references",
                         metadata = EXCLUDED.metadata
                     """,
                     (
                         chunk.id,
                         chunk.content,
-                        embedding,
+                        embedding_vec,
                         chunk.language,
                         chunk.chunk_type,
                         chunk.file_path,
@@ -213,11 +222,15 @@ class PgVectorStore:
         if conditions:
             where_clause = "WHERE " + " AND ".join(conditions)
 
+        # Convert query_embedding to numpy array for pgvector
+        # pgvector adapter (registered via register_vector) will convert numpy array to vector type
+        query_vec = np.array(query_embedding, dtype=np.float32)
+        
         query = f"""
             SELECT
                 id, content, language, chunk_type, file_path,
                 start_line, end_line, class_name, method_name,
-                documentation, references, metadata,
+                documentation, "references", metadata,
                 1 - (embedding <=> %s) as similarity
             FROM {self.table_name}
             {where_clause}
@@ -225,8 +238,11 @@ class PgVectorStore:
             LIMIT %s
         """
 
+        # Replace the first query_embedding with numpy array
+        # pgvector adapter will automatically convert it to vector type
+        params[0] = query_vec
         # Add query_embedding again for ORDER BY
-        params.insert(-1, query_embedding)
+        params.insert(-1, query_vec)
 
         with self._conn.cursor() as cur:
             cur.execute(query, params)
@@ -235,7 +251,10 @@ class PgVectorStore:
         results = []
         for row in rows:
             references = row[10] if row[10] else []
-            metadata = json.loads(row[11]) if row[11] else {}
+            # Metadata is JSONB, so psycopg3 returns it as a dict already
+            metadata = row[11] if row[11] else {}
+            if isinstance(metadata, str):
+                metadata = json.loads(metadata)
             chunk = CodeChunk(
                 id=row[0],
                 content=row[1],
@@ -275,9 +294,9 @@ class PgVectorStore:
                 SELECT
                     id, content, language, chunk_type, file_path,
                     start_line, end_line, class_name, method_name,
-                    documentation, references, metadata
+                    documentation, "references", metadata
                 FROM {self.table_name}
-                WHERE %s = ANY(references)
+                WHERE %s = ANY("references")
                 LIMIT %s
                 """,
                 (class_name, top_k),
@@ -287,7 +306,10 @@ class PgVectorStore:
         results = []
         for row in rows:
             references = row[10] if row[10] else []
-            metadata = json.loads(row[11]) if row[11] else {}
+            # Metadata is JSONB, so psycopg3 returns it as a dict already
+            metadata = row[11] if row[11] else {}
+            if isinstance(metadata, str):
+                metadata = json.loads(metadata)
             chunk = CodeChunk(
                 id=row[0],
                 content=row[1],
@@ -321,7 +343,7 @@ class PgVectorStore:
                 SELECT
                     id, content, language, chunk_type, file_path,
                     start_line, end_line, class_name, method_name,
-                    documentation, references, metadata
+                    documentation, "references", metadata
                 FROM {self.table_name}
                 WHERE class_name = %s AND chunk_type = 'class'
                 LIMIT 1
@@ -334,7 +356,10 @@ class PgVectorStore:
             return None
 
         references = row[10] if row[10] else []
-        metadata = json.loads(row[11]) if row[11] else {}
+        # Metadata is JSONB, so psycopg3 returns it as a dict already
+        metadata = row[11] if row[11] else {}
+        if isinstance(metadata, str):
+            metadata = json.loads(metadata)
         return CodeChunk(
             id=row[0],
             content=row[1],
@@ -391,6 +416,64 @@ class PgVectorStore:
         with self._conn.cursor() as cur:
             cur.execute(f"SELECT COUNT(*) FROM {self.table_name}")
             return cur.fetchone()[0]
+
+    def list_classes(self, language: Optional[str] = None) -> list[CodeChunk]:
+        """List all class chunks, optionally filtered by language.
+        
+        Args:
+            language: Filter by language (e.g., 'java')
+            
+        Returns:
+            List of CodeChunk objects for classes
+        """
+        conditions = ["chunk_type = 'class'"]
+        params = []
+        
+        if language:
+            conditions.append("language = %s")
+            params.append(language)
+        
+        where_clause = "WHERE " + " AND ".join(conditions)
+        
+        with self._conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                    id, content, language, chunk_type, file_path,
+                    start_line, end_line, class_name, method_name,
+                    documentation, "references", metadata
+                FROM {self.table_name}
+                {where_clause}
+                ORDER BY language, class_name
+                """,
+                params,
+            )
+            rows = cur.fetchall()
+        
+        results = []
+        for row in rows:
+            references = row[10] if row[10] else []
+            # Metadata is JSONB, so psycopg3 returns it as a dict already
+            metadata = row[11] if row[11] else {}
+            if isinstance(metadata, str):
+                metadata = json.loads(metadata)
+            
+            results.append(CodeChunk(
+                id=row[0],
+                content=row[1],
+                language=row[2],
+                chunk_type=row[3],
+                file_path=row[4],
+                start_line=row[5],
+                end_line=row[6],
+                class_name=row[7],
+                method_name=row[8],
+                documentation=row[9],
+                references=references,
+                metadata=metadata,
+            ))
+        
+        return results
 
     def get_stats(self) -> dict:
         """Get statistics about stored chunks."""

@@ -1,6 +1,8 @@
 """RAG retriever for codebase queries."""
 
+import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 from google import genai
@@ -101,10 +103,76 @@ Guidelines:
         Returns:
             RAGResponse with answer and sources
         """
+        # Check if query is asking to list/count classes
+        question_lower = question.lower()
+        is_list_count_query = any(
+            pattern in question_lower 
+            for pattern in ["list", "which", "what are", "how many", "count", "show all", "show the", "are they", "did we", "indexed"]
+        )
+        is_class_query = chunk_type == "class" or any(
+            keyword in question_lower 
+            for keyword in ["class", "classes"]
+        )
+        
+        # Detect if query mentions a specific class name (e.g., "What does StagedWalletBean do?")
+        # Extract potential class names from the query (capitalized words that look like class names)
+        potential_class_names = re.findall(r'\b([A-Z][a-zA-Z0-9]+(?:Bean|Facade|Record|Data|Config|Type|Service|Manager|Handler|Controller|Utils|Helper|Factory|Builder|Parser|Writer|Reader|Exception|Error|Interface|Abstract)?)\b', question)
+        
+        # Try to find the specific class directly
+        direct_class_chunk = None
+        if potential_class_names:
+            # Try each potential class name
+            for class_name in potential_class_names:
+                direct_class_chunk = self.store.get_class_chunk(class_name)
+                if direct_class_chunk:
+                    print(f"[DEBUG] Found direct class match: {class_name}", file=__import__('sys').stderr)
+                    break
+        
+        # If asking to list/count classes, supplement with ALL classes from database
+        all_classes_summary = None
+        all_classes_list = None
+        if is_list_count_query and is_class_query:
+            all_classes = self.store.list_classes(language=language)
+            if all_classes:
+                all_classes_list = all_classes
+                # Build a summary of all classes (names and locations) for context
+                class_summaries = []
+                for cls in sorted(all_classes, key=lambda c: c.class_name or c.file_path):
+                    class_name = cls.class_name or Path(cls.file_path).stem
+                    location = f"{cls.file_path}:{cls.start_line}-{cls.end_line}"
+                    class_summaries.append(f"{class_name} ({location})")
+                
+                # Format as a clear, numbered list - keep it concise but complete
+                all_classes_summary = f"""
+╔══════════════════════════════════════════════════════════════════════════════╗
+║ COMPLETE LIST OF ALL INDEXED CLASSES - {len(all_classes)} TOTAL CLASSES FOUND ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+IMPORTANT: This is the COMPLETE and EXHAUSTIVE list of ALL classes indexed in 
+the database. When answering questions about which classes are indexed or how 
+many classes exist, you MUST use this complete list, not just the code snippets 
+shown below.
+
+CLASSES INDEXED:
+{chr(10).join(f"{i+1:3d}. {cls}" for i, cls in enumerate(class_summaries))}
+
+TOTAL COUNT: {len(all_classes)} classes
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║ END OF COMPLETE CLASS LIST                                                   ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+The code snippets below are provided for additional context only. For questions 
+about which classes are indexed, use the complete list above.
+
+"""
+                # Debug: print to verify detection
+                print(f"[DEBUG] Detected class list query. Found {len(all_classes)} classes. Including complete list in context.", file=__import__('sys').stderr)
+        
         # Embed the question
         query_embedding = self.embedder.embed_text(question)
 
-        # Retrieve relevant chunks
+        # Retrieve relevant chunks via semantic search
         results = self.store.search(
             query_embedding=query_embedding,
             top_k=top_k,
@@ -114,6 +182,16 @@ Guidelines:
 
         chunks = [chunk for chunk, _ in results]
         scores = [score for _, score in results]
+        
+        # If we found a direct class match, prioritize it at the top
+        if direct_class_chunk:
+            # Remove the direct class chunk from semantic results if it's there
+            chunks = [c for c in chunks if c.id != direct_class_chunk.id]
+            scores = scores[:len(chunks)]  # Adjust scores to match
+            
+            # Put the direct class chunk first
+            chunks.insert(0, direct_class_chunk)
+            scores.insert(0, 1.0)  # Perfect match score
 
         # Optionally fetch dependencies
         dependencies = []
@@ -122,9 +200,31 @@ Guidelines:
 
         # Build context from chunks and dependencies
         context = self._build_context(chunks, dependencies)
+        
+        # For list/count queries, use ONLY the complete list - remove code snippets
+        # This ensures LLM focuses on the complete database record
+        if is_list_count_query and is_class_query and all_classes_list:
+            # Build the complete list as the ONLY context
+            class_summaries = []
+            for cls in sorted(all_classes_list, key=lambda c: c.class_name or c.file_path):
+                class_name = cls.class_name or Path(cls.file_path).stem
+                location = f"{cls.file_path}:{cls.start_line}-{cls.end_line}"
+                class_summaries.append(f"{class_name} ({location})")
+            
+            # Create context with ONLY the complete list - no code snippets
+            context = f"""DATABASE QUERY RESULT - ALL {len(all_classes_list)} INDEXED CLASSES
 
-        # Generate answer
-        answer = self._generate_answer(question, context)
+This is a direct database query result showing ALL classes indexed in the system.
+
+{chr(10).join(f"{i+1}. {cls}" for i, cls in enumerate(class_summaries))}
+
+Total: {len(all_classes_list)} classes."""
+            
+            # Debug output
+            print(f"[DEBUG] List query detected. Using ONLY complete list ({len(all_classes)} classes). Code snippets excluded.", file=__import__('sys').stderr)
+        
+        # Generate answer using LLM
+        answer = self._generate_answer(question, context, is_list_query=(is_list_count_query and is_class_query))
 
         return RAGResponse(
             answer=answer,
@@ -383,9 +483,39 @@ Guidelines:
 
         return "\n\n".join(context_parts)
 
-    def _generate_answer(self, question: str, context: str) -> str:
+    def _generate_answer(self, question: str, context: str, is_list_query: bool = False) -> str:
         """Generate an answer using the LLM."""
-        prompt = f"""Based on the following code snippets from the codebase, answer the question.
+        # Check if context contains a complete class list
+        has_complete_list = "DATABASE QUERY RESULT" in context or is_list_query
+        
+        if has_complete_list or is_list_query:
+            # Extract the count from the context
+            count_match = re.search(r'ALL (\d+) INDEXED CLASSES', context)
+            total_count = count_match.group(1) if count_match else "all"
+            
+            # Override system prompt for list queries - make it crystal clear
+            system_instruction = f"""You are answering a question about which classes are indexed in a codebase.
+
+The context provided is a DIRECT DATABASE QUERY RESULT showing ALL {total_count} classes that are indexed. This is NOT code snippets - this is the complete database record.
+
+Your task:
+- List ALL {total_count} classes from the database query result
+- Do NOT say "I can only see X classes" - you have ALL {total_count} classes
+- Do NOT reference "code snippets" - this is a database query result
+- Provide a complete, numbered list of all classes"""
+            
+            prompt = f"""You have been given a database query result showing all indexed classes:
+
+{context}
+
+---
+
+Question: {question}
+
+Answer by listing ALL classes from the database query result above. This is a complete list - use all of it."""
+        else:
+            system_instruction = self.system_prompt
+            prompt = f"""Based on the following code snippets from the codebase, answer the question.
 
 {context}
 
@@ -399,9 +529,9 @@ Answer:"""
             model=self.llm_model,
             contents=prompt,
             config={
-                "system_instruction": self.system_prompt,
+                "system_instruction": system_instruction,
                 "temperature": 0.3,
-                "max_output_tokens": 2048,
+                "max_output_tokens": 8192,  # Increased to allow full class listings
             },
         )
 
