@@ -1,7 +1,7 @@
 # Google Cloud Platform Configuration
 gcp:
-  project_id: "YOUR_PROJECT_ID"          # Your GCP project ID
-  location: "us-central1"                 # Vertex AI region
+  project_id: "YOUR_PROJECT_ID" # Your GCP project ID
+  location: "us-central1" # Vertex AI region
   staging_bucket: "gs://YOUR_BUCKET_NAME" # GCS bucket for training data
 
 # Fine-Tuning Configuration
@@ -10,9 +10,9 @@ training:
   base_model: "gemini-2.5-flash"
 
   # Training hyperparameters
-  epochs: 3                    # Number of training epochs (1-10)
-  learning_rate_multiplier: 1  # Learning rate adjustment (0.1-10)
-  adapter_size: 4              # LoRA adapter size (1, 4, 8, 16)
+  epochs: 3 # Number of training epochs (1-10)
+  learning_rate_multiplier: 1 # Learning rate adjustment (0.1-10)
+  adapter_size: 4 # LoRA adapter size (1, 4, 8, 16)
 
   # Dataset paths (relative to staging_bucket)
   training_data: "training/train.jsonl"
@@ -25,7 +25,7 @@ extraction:
     include_private_methods: true
     include_comments: true
     include_imports: true
-    max_class_size_lines: 500   # Skip very large classes
+    max_class_size_lines: 500 # Skip very large classes
 
   # General settings
   languages:
@@ -74,13 +74,13 @@ strategy:
 # Validation Settings
 validation:
   # Split ratio for train/validation
-  validation_split: 0.1         # 10% for validation
-  max_validation_examples: 500  # Cap validation set size
+  validation_split: 0.1 # 10% for validation
+  max_validation_examples: 500 # Cap validation set size
 
   # Quality checks
-  min_code_length: 50           # Minimum characters in code
-  max_code_length: 50000        # Maximum characters
-  require_docstring: false      # Require docstrings/comments
+  min_code_length: 50 # Minimum characters in code
+  max_code_length: 50000 # Maximum characters
+  require_docstring: false # Require docstrings/comments
 
 # Output Settings
 output:
@@ -88,3 +88,34 @@ output:
   train_file: "train.jsonl"
   validation_file: "validation.jsonl"
   stats_file: "dataset_stats.json"
+
+# RAG (Retrieval-Augmented Generation) Settings
+rag:
+  # Embedding model for semantic search
+  embedding_model: "text-embedding-005"
+
+  # LLM for answer generation
+  llm_model: "gemini-2.5-pro"
+
+  # Retrieval settings
+  top_k: 5 # Number of chunks to retrieve
+
+  # PostgreSQL + pgvector database settings
+  pgvector:
+    host: "localhost"
+    port: 5432
+    database: "codebase_rag"
+    user: "postgres"
+    password: "" # Use PGPASSWORD env var for security
+
+  # Optional: Custom system prompt for RAG queries
+  system_prompt: |
+    You are an expert software engineer assistant. Your task is to answer
+    questions about a codebase using the provided code snippets as context.
+
+    Guidelines:
+    - Answer based ONLY on the provided code snippets
+    - If the answer is not in the provided code, say so clearly
+    - Include specific file paths and line numbers when referencing code
+    - Provide code snippets in your answer when relevant
+    - Be concise but thorough
