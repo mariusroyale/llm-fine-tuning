@@ -160,7 +160,7 @@
 │   ┌──────────────────┐         │   Vertex AI      │                             │
 │   │  start_tuning.py │ ──────► │   Fine-Tuning    │                             │
 │   │                  │         │                  │                             │
-│   │  Config:                   │  - Base: gemini-2.5-flash                      │
+│   │  Config:                   │  - Base: gemini-2.5-pro                      │
 │   │  - epochs: 3               │  - Supervised tuning                           │
 │   │  - learning_rate: 1.0      │  - Creates tuned model                         │
 │   │  - adapter_size: 4         │                  │                             │
@@ -237,7 +237,7 @@
 │    staging_bucket: "gs://your-bucket"                                           │
 │                                                                                 │
 │  training:                                                                      │
-│    base_model: "gemini-2.5-flash"                                               │
+│    base_model: "gemini-2.5-pro"                                               │
 │    epochs: 3                                                                    │
 │    learning_rate_multiplier: 1.0                                                │
 │    adapter_size: 4                                                              │

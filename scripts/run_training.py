@@ -112,7 +112,7 @@ def main(
 
     console.print(f"\n[bold]Training Configuration:[/bold]")
     console.print(
-        f"  Base Model: {training_config.get('base_model', 'gemini-2.5-flash')}"
+        f"  Base Model: {training_config.get('base_model', 'gemini-2.5-pro')}"
     )
     console.print(f"  Epochs: {training_config.get('epochs', 3)}")
     console.print(
@@ -196,7 +196,7 @@ def main(
         project_id=project_id,
         location=location,
         training_data_uri=training_uri,
-        base_model=training_config.get("base_model", "gemini-2.5-flash"),
+        base_model=training_config.get("base_model", "gemini-2.5-pro"),
         validation_data_uri=validation_uri,
         epochs=training_config.get("epochs", 3),
         learning_rate_multiplier=training_config.get("learning_rate_multiplier", 1.0),

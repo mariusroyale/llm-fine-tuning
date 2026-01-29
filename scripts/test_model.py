@@ -190,7 +190,7 @@ def interactive_session(
     model: str,
     system_instruction: str = None,
     compare: bool = False,
-    base_model: str = "gemini-2.5-flash",
+    base_model: str = "gemini-2.5-pro",
 ):
     """Run an interactive chat session."""
     console.print("\n[bold green]Interactive Session Started[/bold green]")

@@ -37,7 +37,7 @@ gcp:
   staging_bucket: "gs://your-bucket-name"  # ← Change this
 
 training:
-  base_model: "gemini-2.5-flash"  # Options: gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite
+  base_model: "gemini-2.5-pro"  # Options: gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite
   epochs: 3
 ```
 

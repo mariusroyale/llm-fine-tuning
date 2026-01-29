@@ -23,7 +23,7 @@ def start_fine_tuning_job(
     project_id: str,
     location: str,
     training_data_uri: str,
-    base_model: str = "gemini-2.5-flash",
+    base_model: str = "gemini-2.5-pro",
     tuned_model_display_name: Optional[str] = None,
     validation_data_uri: Optional[str] = None,
     epochs: int = 3,
