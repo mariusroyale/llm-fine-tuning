@@ -1,13 +1,13 @@
 # Quick Start Guide
 
-Get your fine-tuned Gemini model running in 5 steps.
+Get up and running in 5 minutes with Docker.
 
 ## Prerequisites
 
-1. **Google Cloud Account** with billing enabled
-2. **Vertex AI API** enabled in your project
-3. **GCS Bucket** for storing training data
-4. Python 3.10+
+1. **Docker** and **Docker Compose** installed
+2. **Google Cloud Account** with billing enabled
+3. **Vertex AI API** enabled in your project
+4. `gcloud` CLI authenticated
 
 ## Step 1: Setup
 
@@ -15,16 +15,16 @@ Get your fine-tuned Gemini model running in 5 steps.
 # Clone and enter project
 cd llm-fine-tuning
 
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-
 # Authenticate with Google Cloud
 gcloud auth application-default login
+
+# Start Docker services
+docker compose up -d --build
 ```
+
+This starts:
+- `app` - Python application
+- `pgvector` - PostgreSQL with vector search
 
 ## Step 2: Configure
 
@@ -32,102 +32,104 @@ Edit `config/config.yaml`:
 
 ```yaml
 gcp:
-  project_id: "your-actual-project-id"  # ← Change this
+  project_id: "your-actual-project-id"  # Change this
   location: "us-central1"
-  staging_bucket: "gs://your-bucket-name"  # ← Change this
+  staging_bucket: "gs://your-bucket-name"  # Change this (for fine-tuning)
 
 training:
-  base_model: "gemini-2.5-pro"  # Options: gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite
-  epochs: 3
+  base_model: "gemini-2.5-pro"
+
+rag:
+  embedding_model: "text-embedding-005"
+  llm_model: "gemini-2.5-pro"
 ```
 
-## Step 3: Add Your Java Code
+## Step 3: Add Your Code
 
 ```bash
-# Copy your Java source files
+# Copy your source files
 cp -r /path/to/your/java/project/src data/raw/java/
+
+# Or Python, TypeScript, etc.
+cp -r /path/to/your/python/project data/raw/
 ```
 
-**What to include:**
-- Service classes
-- Controllers
-- Repositories
-- Domain models
-- Utility classes
-
-**Minimum:** 100+ examples recommended (roughly 20-30 Java classes)
-
-## Step 4: Prepare Training Data
+## Step 4: RAG - Query Your Codebase
 
 ```bash
-# Generate training examples
-python scripts/prepare_data.py --strategy code_explanation
+# Index your code (creates embeddings, stores in pgvector)
+docker compose exec app python scripts/index_codebase.py -s data/raw
 
-# Check output
-head -1 data/processed/train.jsonl | python -m json.tool
+# Query interactively
+docker compose exec app python scripts/query_codebase.py -i
 ```
 
-**Available strategies:**
-- `code_explanation` - Train model to explain code (default)
-- `code_generation` - Train model to write code in your style
-- `code_review` - Train model to review code
+Example queries:
+- "Is user authentication implemented?"
+- "Show me how database connections are handled"
+- "What design patterns are used?"
 
-## Step 5: Train and Deploy
+## Step 5: Fine-Tuning (Optional)
+
+Train a custom model that knows your coding style:
 
 ```bash
-# Upload data and start training
-python scripts/run_training.py
+# Generate training data
+docker compose exec app python scripts/prepare_data.py --strategy code_explanation
 
-# This will:
-# 1. Upload data to GCS
-# 2. Start fine-tuning job
-# 3. Monitor progress
+# Upload and start training
+docker compose exec app python scripts/run_training.py
 ```
 
-Training typically takes **1-4 hours** depending on dataset size.
-
-## Step 6: Test Your Model
+Training takes 1-4 hours. When done, use your model with RAG:
 
 ```bash
-# Interactive testing
-python scripts/test_model.py -m "projects/YOUR_PROJECT/locations/us-central1/models/YOUR_MODEL" -i
-
-# Single prompt
-python scripts/test_model.py -m "YOUR_MODEL" -p "Explain the UserService class"
+docker compose exec app python scripts/query_codebase.py -i --model "your-tuned-model-id"
 ```
 
-## Estimated Costs
+## Common Commands
 
-| Component | Approximate Cost |
-|-----------|------------------|
-| 1000 training examples, 3 epochs | ~$5-15 |
-| Inference (per 1M tokens) | Same as base model |
-| GCS Storage | < $1/month |
+```bash
+# Start services
+docker compose up -d
+
+# Stop services
+docker compose down
+
+# View logs
+docker compose logs -f app
+
+# Rebuild after code changes
+docker compose up -d --build
+
+# Shell into container
+docker compose exec app bash
+```
 
 ## Troubleshooting
 
 ### "No source files found"
-→ Place Java files in `data/raw/java/`
+Place your code in `data/raw/` (Java in `data/raw/java/`)
 
-### "Only X examples generated"
-→ Add more source code (aim for 100+ examples)
+### "Connection refused" to database
+Wait a few seconds for pgvector to start, or check `docker compose ps`
 
-### Training job fails
-→ Check Vertex AI console for error details
-→ Verify GCS bucket permissions
+### "Permission denied" on Docker
+Run `sudo usermod -aG docker $USER` and log out/in
 
-### "Model not found"
-→ Training may still be in progress (check Vertex AI console)
+### Vertex AI authentication errors
+Run `gcloud auth application-default login` and restart containers
+
+## Costs
+
+| Operation | Cost |
+|-----------|------|
+| Index 1000 code chunks | ~$0.10 |
+| 100 RAG queries | ~$0.50-2.00 |
+| Fine-tune (1000 examples, 3 epochs) | ~$5-15 |
 
 ## Next Steps
 
-1. **Improve quality**: Manually review and edit training examples
-2. **Add more data**: Include documentation, comments, code reviews
-3. **Try different strategies**: Mix explanation + generation examples
-4. **Evaluate**: Compare base model vs tuned model responses
-
-## Resources
-
-- [Vertex AI Fine-Tuning Docs](https://cloud.google.com/vertex-ai/generative-ai/docs/models/gemini-use-supervised-tuning)
-- [Gemini API Reference](https://ai.google.dev/gemini-api/docs)
-- [Training Data Best Practices](https://cloud.google.com/vertex-ai/generative-ai/docs/models/gemini-supervised-tuning-prepare)
+1. Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed diagrams
+2. Try different `--strategy` options for fine-tuning
+3. Use `--model` flag to combine RAG with your fine-tuned model

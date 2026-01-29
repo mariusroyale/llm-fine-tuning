@@ -1,163 +1,172 @@
-# Google Vertex AI Fine-Tuning Project
+# LLM Fine-Tuning & RAG Pipeline
 
-A complete pipeline for fine-tuning Google Gemini models using your Java classes and source code.
+A complete pipeline for fine-tuning Google Gemini models and querying your codebase using RAG (Retrieval-Augmented Generation).
 
-## Project Overview
+## What This Does
 
-This project enables you to:
-1. **Extract knowledge** from Java classes and source code
-2. **Transform** code into training datasets (JSONL format)
-3. **Upload** to Google Cloud Storage
-4. **Fine-tune** Gemini models via Vertex AI
-5. **Evaluate** and deploy your custom model
+1. **RAG Pipeline** - Query your codebase with natural language
+   - "Is user authentication implemented?"
+   - "Show me code that handles database connections"
+   - Returns actual code snippets with file/line citations
 
-## Recommended Use Cases for Your Java Code
+2. **Fine-Tuning Pipeline** - Train Gemini to know your coding style
+   - Model learns your patterns and conventions
+   - Combined with RAG for best results
 
-Based on Google's fine-tuning capabilities, here are the best applications:
+## Quick Start (Docker)
 
-### 1. Code Understanding & Generation
-- Train the model to understand YOUR coding patterns
-- Generate code that follows your project's conventions
-- Answer questions about your codebase architecture
+```bash
+# 1. Start services
+docker compose up -d --build
 
-### 2. Code Review Assistant
-- Train on your code + review comments
-- Generate code reviews in your team's style
+# 2. Index your codebase (for RAG)
+docker compose exec app python scripts/index_codebase.py -s data/raw
 
-### 3. Documentation Generator
-- Train on code + documentation pairs
-- Auto-generate docs matching your standards
+# 3. Query your code
+docker compose exec app python scripts/query_codebase.py -i
+```
 
-### 4. Bug Pattern Detection
-- Train on buggy code + fixes
-- Identify similar patterns in new code
+## Architecture
 
-## Supported Models (Vertex AI)
+```
+                          YOUR CODEBASE
+                          data/raw/
+                               │
+         ┌─────────────────────┴─────────────────────┐
+         │                                           │
+         ▼                                           ▼
+┌─────────────────┐                     ┌─────────────────┐
+│  FINE-TUNING    │                     │      RAG        │
+│  (one-time)     │                     │  (reindex on    │
+│                 │                     │   code changes) │
+└────────┬────────┘                     └────────┬────────┘
+         │                                       │
+         └──────────────┬────────────────────────┘
+                        │
+                        ▼
+               ┌─────────────────┐
+               │ COMBINED QUERY  │
+               │                 │
+               │ RAG retrieves   │
+               │ actual code  +  │
+               │ Fine-tuned      │
+               │ model answers   │
+               └─────────────────┘
+```
 
-| Model | Max Training Tokens | Best For |
-|-------|---------------------|----------|
-| Gemini 2.5 Pro | 131,072 | Complex reasoning, large codebases |
-| Gemini 2.5 Flash | 131,072 | Fast inference, balanced quality |
-| Gemini 2.5 Flash-Lite | 131,072 | Cost-effective, high volume |
+## Prerequisites
+
+- Docker & Docker Compose
+- Google Cloud account with Vertex AI enabled (for embeddings & LLM)
+- `gcloud` CLI authenticated
+
+## Setup
+
+### 1. Configure GCP
+
+```bash
+# Authenticate
+gcloud auth application-default login
+
+# Edit config
+cp config/config.yaml.example config/config.yaml
+# Set your project_id and staging_bucket
+```
+
+### 2. Add Your Code
+
+```bash
+# Copy your source code
+cp -r /path/to/your/project/src data/raw/java/
+```
+
+### 3. Start Docker
+
+```bash
+docker compose up -d --build
+```
+
+## Usage
+
+### RAG: Query Your Codebase
+
+```bash
+# Index (run once, or when code changes)
+docker compose exec app python scripts/index_codebase.py -s data/raw
+
+# Interactive query
+docker compose exec app python scripts/query_codebase.py -i
+
+# Single query
+docker compose exec app python scripts/query_codebase.py -q "How is authentication handled?"
+```
+
+### Fine-Tuning: Train Custom Model
+
+```bash
+# Prepare training data
+docker compose exec app python scripts/prepare_data.py
+
+# Start training (uploads to GCS, launches Vertex AI job)
+docker compose exec app python scripts/run_training.py
+
+# Test your model
+docker compose exec app python scripts/test_model.py -m "your-model-id" -i
+```
+
+### Combined: RAG + Fine-Tuned Model
+
+```bash
+# Query using your fine-tuned model
+docker compose exec app python scripts/query_codebase.py -i --model "your-model-id"
+```
 
 ## Project Structure
 
 ```
 llm-fine-tuning/
-├── README.md
-├── requirements.txt
+├── docker-compose.yml       # Docker services (app + pgvector)
+├── Dockerfile
 ├── config/
-│   └── config.yaml              # GCP and training configuration
+│   └── config.yaml          # GCP and training configuration
 ├── data/
-│   ├── raw/                     # Your Java source files go here
-│   │   └── java/
-│   ├── processed/               # Converted training data
-│   │   ├── train.jsonl
-│   │   └── validation.jsonl
-│   └── examples/                # Example training data
+│   └── raw/                 # Your source code goes here
 ├── src/
-│   ├── __init__.py
-│   ├── extractors/              # Code extraction modules
-│   │   ├── __init__.py
-│   │   ├── java_extractor.py    # Parse Java classes
-│   │   └── generic_extractor.py # Other source files
-│   ├── converters/              # Transform to training format
-│   │   ├── __init__.py
-│   │   ├── code_to_jsonl.py     # Main converter
-│   │   └── strategies/          # Different training strategies
-│   │       ├── __init__.py
-│   │       ├── code_explanation.py
-│   │       ├── code_generation.py
-│   │       └── code_review.py
-│   ├── training/                # Vertex AI integration
-│   │   ├── __init__.py
-│   │   ├── upload_data.py       # GCS upload
-│   │   ├── start_tuning.py      # Launch fine-tuning job
-│   │   └── monitor.py           # Job monitoring
-│   └── evaluation/              # Model evaluation
-│       ├── __init__.py
-│       └── evaluate_model.py
+│   ├── extractors/          # Code parsing (Java, Python, etc.)
+│   ├── converters/          # Training data generation
+│   ├── rag/                 # RAG pipeline
+│   │   ├── chunker.py       # Semantic code chunking
+│   │   ├── embedder.py      # Vertex AI embeddings
+│   │   ├── vector_store.py  # pgvector storage
+│   │   └── retriever.py     # Query + generate
+│   └── training/            # Vertex AI fine-tuning
 ├── scripts/
-│   ├── prepare_data.py          # End-to-end data preparation
-│   ├── run_training.py          # Launch training
-│   └── test_model.py            # Test fine-tuned model
-└── notebooks/
-    └── exploration.ipynb        # Data exploration
+│   ├── index_codebase.py    # Index code for RAG
+│   ├── query_codebase.py    # Query with RAG
+│   ├── prepare_data.py      # Prepare fine-tuning data
+│   ├── run_training.py      # Launch fine-tuning
+│   └── test_model.py        # Test models
+└── docs/
+    └── ARCHITECTURE.md      # Detailed architecture diagrams
 ```
 
-## Quick Start
+## Supported Languages
 
-### Prerequisites
-- Python 3.10+
-- Google Cloud account with Vertex AI enabled
-- `gcloud` CLI authenticated
+- Java (full AST parsing)
+- Python, JavaScript, TypeScript, Go, Rust, and more (generic extraction)
 
-### Installation
+## Costs
 
-```bash
-pip install -r requirements.txt
-gcloud auth application-default login
-```
+| Component | Approximate Cost |
+|-----------|------------------|
+| Embeddings | ~$0.0001 per 1K characters |
+| Gemini API | ~$1.25-5 per 1M tokens |
+| Fine-tuning | ~$2-4 per 1M tokens trained |
+| pgvector | Free (runs locally in Docker) |
 
-### Step 1: Add Your Java Code
+## Documentation
 
-Place your Java source files in `data/raw/java/`:
-```bash
-cp -r /path/to/your/java/project/* data/raw/java/
-```
-
-### Step 2: Configure
-
-Edit `config/config.yaml` with your GCP settings.
-
-### Step 3: Prepare Training Data
-
-```bash
-python scripts/prepare_data.py --strategy code_explanation
-```
-
-### Step 4: Start Fine-Tuning
-
-```bash
-python scripts/run_training.py
-```
-
-### Step 5: Test Your Model
-
-```bash
-python scripts/test_model.py --prompt "Explain the UserService class"
-```
-
-## Training Data Format
-
-Each training example follows this JSONL structure:
-
-```json
-{
-  "systemInstruction": {
-    "role": "system",
-    "parts": [{"text": "You are an expert Java developer..."}]
-  },
-  "contents": [
-    {"role": "user", "parts": [{"text": "Explain this Java class: ..."}]},
-    {"role": "model", "parts": [{"text": "This class implements..."}]}
-  ]
-}
-```
-
-## Cost Estimation
-
-| Component | Cost |
-|-----------|------|
-| Training | ~$0.002-0.007 per 1K tokens × epochs |
-| Storage | ~$0.02/GB/month (GCS) |
-| Inference | Same as base model rates |
-
-## Requirements
-
-- Minimum 100 training examples recommended
-- Quality > Quantity for best results
-- Validation set recommended (up to 5,000 examples)
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed pipeline diagrams.
 
 ## License
 
