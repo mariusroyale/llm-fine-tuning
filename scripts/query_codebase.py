@@ -62,8 +62,8 @@ console = Console()
 @click.option(
     "--show-sources",
     is_flag=True,
-    default=True,
-    help="Show source code snippets",
+    default=False,
+    help="Show source code snippets (disabled by default)",
 )
 @click.option(
     "--retrieve-only",

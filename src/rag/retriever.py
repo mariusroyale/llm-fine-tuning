@@ -114,18 +114,29 @@ Guidelines:
             for keyword in ["class", "classes"]
         )
         
+        # Detect schema-related queries (need full class definition)
+        is_schema_query = any(
+            pattern in question_lower 
+            for pattern in ["schema", "database schema", "table", "ddl", "sql schema", "entity", "orm", "jpa", "hibernate"]
+        )
+        
         # Detect if query mentions a specific class name (e.g., "What does StagedWalletBean do?")
         # Extract potential class names from the query (capitalized words that look like class names)
         potential_class_names = re.findall(r'\b([A-Z][a-zA-Z0-9]+(?:Bean|Facade|Record|Data|Config|Type|Service|Manager|Handler|Controller|Utils|Helper|Factory|Builder|Parser|Writer|Reader|Exception|Error|Interface|Abstract)?)\b', question)
         
         # Try to find the specific class directly
         direct_class_chunk = None
+        all_class_chunks = None  # For schema queries, get ALL chunks for the class
         if potential_class_names:
             # Try each potential class name
             for class_name in potential_class_names:
                 direct_class_chunk = self.store.get_class_chunk(class_name)
                 if direct_class_chunk:
                     print(f"[DEBUG] Found direct class match: {class_name}", file=__import__('sys').stderr)
+                    # For schema queries, get ALL chunks (class + all methods) for complete context
+                    if is_schema_query:
+                        all_class_chunks = self.store.get_all_chunks_for_class(class_name)
+                        print(f"[DEBUG] Schema query detected. Retrieved {len(all_class_chunks)} chunks for {class_name}", file=__import__('sys').stderr)
                     break
         
         # If asking to list/count classes, supplement with ALL classes from database
@@ -185,13 +196,20 @@ about which classes are indexed, use the complete list above.
         
         # If we found a direct class match, prioritize it at the top
         if direct_class_chunk:
-            # Remove the direct class chunk from semantic results if it's there
-            chunks = [c for c in chunks if c.id != direct_class_chunk.id]
-            scores = scores[:len(chunks)]  # Adjust scores to match
-            
-            # Put the direct class chunk first
-            chunks.insert(0, direct_class_chunk)
-            scores.insert(0, 1.0)  # Perfect match score
+            # For schema queries, use ALL class chunks instead of just semantic search
+            if is_schema_query and all_class_chunks:
+                # Replace semantic search results with all class chunks for complete context
+                chunks = all_class_chunks
+                scores = [1.0] * len(chunks)  # Perfect match scores
+                print(f"[DEBUG] Using all {len(chunks)} chunks for schema generation", file=__import__('sys').stderr)
+            else:
+                # Remove the direct class chunk from semantic results if it's there
+                chunks = [c for c in chunks if c.id != direct_class_chunk.id]
+                scores = scores[:len(chunks)]  # Adjust scores to match
+                
+                # Put the direct class chunk first
+                chunks.insert(0, direct_class_chunk)
+                scores.insert(0, 1.0)  # Perfect match score
 
         # Optionally fetch dependencies
         dependencies = []

@@ -375,6 +375,55 @@ class PgVectorStore:
             metadata=metadata,
         )
 
+    def get_all_chunks_for_class(self, class_name: str) -> list[CodeChunk]:
+        """Get all chunks (class + methods) for a specific class.
+        
+        Args:
+            class_name: Class name to find
+            
+        Returns:
+            List of all chunks for this class
+        """
+        with self._conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                    id, content, language, chunk_type, file_path,
+                    start_line, end_line, class_name, method_name,
+                    documentation, "references", metadata
+                FROM {self.table_name}
+                WHERE class_name = %s
+                ORDER BY start_line ASC
+                """,
+                (class_name,),
+            )
+            rows = cur.fetchall()
+
+        results = []
+        for row in rows:
+            references = row[10] if row[10] else []
+            # Metadata is JSONB, so psycopg3 returns it as a dict already
+            metadata = row[11] if row[11] else {}
+            if isinstance(metadata, str):
+                metadata = json.loads(metadata)
+            chunk = CodeChunk(
+                id=row[0],
+                content=row[1],
+                language=row[2],
+                chunk_type=row[3],
+                file_path=row[4],
+                start_line=row[5],
+                end_line=row[6],
+                class_name=row[7],
+                method_name=row[8],
+                documentation=row[9],
+                references=references,
+                metadata=metadata,
+            )
+            results.append(chunk)
+
+        return results
+
     def delete_by_file(self, file_path: str) -> int:
         """Delete all chunks from a specific file.
 
