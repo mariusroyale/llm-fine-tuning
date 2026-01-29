@@ -54,7 +54,7 @@ console = Console()
 @click.option(
     "--base-model",
     type=str,
-    default="gemini-2.5-flash",
+    default="gemini-2.5-pro",
     help="Base model for comparison",
 )
 def main(
