@@ -74,6 +74,15 @@
 │    docker compose exec app python scripts/run_training.py                       │
 │    docker compose exec app python scripts/test_model.py -m MODEL -i             │
 │                                                                                 │
+│  Template generation training (Java → JSON templates):                          │
+│    docker compose exec app python scripts/generate_template_training.py \       │
+│      -j data/raw/java -t data/raw/templates -o data/training                    │
+│                                                                                 │
+│  Dependency-aware queries:                                                      │
+│    docker compose exec app python scripts/query_codebase.py -q "..." --with-deps│
+│    docker compose exec app python scripts/query_codebase.py --class-lookup NAME │
+│    docker compose exec app python scripts/query_codebase.py --template-deps FILE│
+│                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
