@@ -1,6 +1,7 @@
 """RAG retriever for codebase queries."""
 
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -9,6 +10,12 @@ from google import genai
 
 from .chunker import CodeChunk
 from .embedder import VertexEmbedder
+from .query_analyzer import (
+    QueryAnalysis,
+    QueryIntent,
+    analyze_query,
+    get_keywords_for_search,
+)
 from .vector_store import PgVectorStore
 
 
@@ -22,6 +29,7 @@ class RAGResponse:
     query: str
     model: str
     dependencies: list[CodeChunk] = field(default_factory=list)
+    query_analysis: Optional[QueryAnalysis] = None
 
     def format_sources(self) -> str:
         """Format sources for display."""
@@ -82,134 +90,129 @@ Guidelines:
     def query(
         self,
         question: str,
-        top_k: int = 5,
+        top_k: Optional[int] = None,
         language: Optional[str] = None,
         chunk_type: Optional[str] = None,
         include_sources: bool = True,
-        include_dependencies: bool = False,
+        include_dependencies: Optional[bool] = None,
         max_dependencies: int = 3,
+        use_hybrid_search: bool = True,
+        min_similarity: Optional[float] = None,
     ) -> RAGResponse:
         """Query the codebase and generate an answer.
 
+        Uses intelligent query analysis to automatically determine:
+        - Query intent (definition, explanation, list, usage, etc.)
+        - Optimal number of results (top_k)
+        - Similarity threshold
+        - Whether to include dependencies
+        - Chunk type filtering
+
         Args:
             question: User's question
-            top_k: Number of chunks to retrieve
+            top_k: Number of chunks to retrieve (auto-determined if None)
             language: Filter by language
-            chunk_type: Filter by chunk type
+            chunk_type: Filter by chunk type (auto-determined if None)
             include_sources: Include source chunks in response
-            include_dependencies: Fetch and include class dependencies
+            include_dependencies: Fetch dependencies (auto-determined if None)
             max_dependencies: Maximum dependencies per source chunk
+            use_hybrid_search: Combine semantic and keyword search for better accuracy
+            min_similarity: Minimum similarity threshold (auto-determined if None)
 
         Returns:
             RAGResponse with answer and sources
         """
-        # Check if query is asking to list/count classes
+        # Analyze the query to determine intent and extract information
+        analysis = analyze_query(question)
+        print(f"[DEBUG] Query intent: {analysis.intent.value}", file=sys.stderr)
+        print(f"[DEBUG] Class names: {analysis.class_names}", file=sys.stderr)
+        print(f"[DEBUG] Primary terms: {analysis.primary_terms}", file=sys.stderr)
+        if analysis.expanded_terms:
+            print(
+                f"[DEBUG] Expanded terms: {analysis.expanded_terms[:5]}",
+                file=sys.stderr,
+            )
+
+        # Use analysis recommendations if not explicitly provided
+        if top_k is None:
+            top_k = analysis.suggested_top_k
+        if min_similarity is None:
+            min_similarity = analysis.min_similarity
+        if include_dependencies is None:
+            include_dependencies = analysis.include_dependencies
+        if chunk_type is None:
+            chunk_type = analysis.chunk_type_filter
+
+        print(
+            f"[DEBUG] Using top_k={top_k}, min_similarity={min_similarity}, "
+            f"include_deps={include_dependencies}, chunk_type={chunk_type}",
+            file=sys.stderr,
+        )
+
         question_lower = question.lower()
-        is_list_count_query = any(
-            pattern in question_lower 
-            for pattern in ["list", "which", "what are", "how many", "count", "show all", "show the", "are they", "did we", "indexed"]
-        )
+        is_list_count_query = analysis.intent == QueryIntent.LIST_COUNT
         is_class_query = chunk_type == "class" or any(
-            keyword in question_lower 
-            for keyword in ["class", "classes"]
+            keyword in question_lower for keyword in ["class", "classes"]
         )
-        
-        # Detect schema-related queries (need full class definition)
-        is_schema_query = any(
-            pattern in question_lower 
-            for pattern in ["schema", "database schema", "table", "ddl", "sql schema", "entity", "orm", "jpa", "hibernate"]
-        )
-        
-        # Detect if query mentions a specific class name (e.g., "What does StagedWalletBean do?")
-        # Extract potential class names from the query (capitalized words that look like class names)
-        potential_class_names = re.findall(r'\b([A-Z][a-zA-Z0-9]+(?:Bean|Facade|Record|Data|Config|Type|Service|Manager|Handler|Controller|Utils|Helper|Factory|Builder|Parser|Writer|Reader|Exception|Error|Interface|Abstract)?)\b', question)
-        
-        # Try to find the specific class directly
+        is_schema_query = analysis.intent == QueryIntent.SCHEMA
+
+        # Try to find specific classes directly
         direct_class_chunk = None
-        all_class_chunks = None  # For schema queries, get ALL chunks for the class
-        if potential_class_names:
-            # Try each potential class name
-            for class_name in potential_class_names:
+        all_class_chunks = None
+        if analysis.class_names:
+            for class_name in analysis.class_names:
                 direct_class_chunk = self.store.get_class_chunk(class_name)
                 if direct_class_chunk:
-                    print(f"[DEBUG] Found direct class match: {class_name}", file=__import__('sys').stderr)
-                    # For schema queries, get ALL chunks (class + all methods) for complete context
+                    print(
+                        f"[DEBUG] Found direct class match: {class_name}",
+                        file=sys.stderr,
+                    )
                     if is_schema_query:
-                        all_class_chunks = self.store.get_all_chunks_for_class(class_name)
-                        print(f"[DEBUG] Schema query detected. Retrieved {len(all_class_chunks)} chunks for {class_name}", file=__import__('sys').stderr)
+                        all_class_chunks = self.store.get_all_chunks_for_class(
+                            class_name
+                        )
+                        print(
+                            f"[DEBUG] Schema query. Retrieved {len(all_class_chunks)} chunks",
+                            file=sys.stderr,
+                        )
                     break
-        
-        # If asking to list/count classes, supplement with ALL classes from database
-        all_classes_summary = None
+
+        # If asking to list/count classes, get ALL classes from database
         all_classes_list = None
         if is_list_count_query and is_class_query:
             all_classes = self.store.list_classes(language=language)
             if all_classes:
                 all_classes_list = all_classes
-                # Build a summary of all classes (names and locations) for context
-                class_summaries = []
-                for cls in sorted(all_classes, key=lambda c: c.class_name or c.file_path):
-                    class_name = cls.class_name or Path(cls.file_path).stem
-                    location = f"{cls.file_path}:{cls.start_line}-{cls.end_line}"
-                    class_summaries.append(f"{class_name} ({location})")
-                
-                # Format as a clear, numbered list - keep it concise but complete
-                all_classes_summary = f"""
-╔══════════════════════════════════════════════════════════════════════════════╗
-║ COMPLETE LIST OF ALL INDEXED CLASSES - {len(all_classes)} TOTAL CLASSES FOUND ║
-╚══════════════════════════════════════════════════════════════════════════════╝
+                print(
+                    f"[DEBUG] List query. Found {len(all_classes)} classes.",
+                    file=sys.stderr,
+                )
 
-IMPORTANT: This is the COMPLETE and EXHAUSTIVE list of ALL classes indexed in 
-the database. When answering questions about which classes are indexed or how 
-many classes exist, you MUST use this complete list, not just the code snippets 
-shown below.
-
-CLASSES INDEXED:
-{chr(10).join(f"{i+1:3d}. {cls}" for i, cls in enumerate(class_summaries))}
-
-TOTAL COUNT: {len(all_classes)} classes
-
-╔══════════════════════════════════════════════════════════════════════════════╗
-║ END OF COMPLETE CLASS LIST                                                   ║
-╚══════════════════════════════════════════════════════════════════════════════╝
-
-The code snippets below are provided for additional context only. For questions 
-about which classes are indexed, use the complete list above.
-
-"""
-                # Debug: print to verify detection
-                print(f"[DEBUG] Detected class list query. Found {len(all_classes)} classes. Including complete list in context.", file=__import__('sys').stderr)
-        
-        # Embed the question
-        query_embedding = self.embedder.embed_text(question)
-
-        # Retrieve relevant chunks via semantic search
-        results = self.store.search(
-            query_embedding=query_embedding,
+        # Perform hybrid search: combine semantic and keyword search
+        chunks, scores = self._hybrid_search(
+            question=question,
+            analysis=analysis,
             top_k=top_k,
             language=language,
             chunk_type=chunk_type,
+            min_similarity=min_similarity,
+            use_hybrid=use_hybrid_search,
         )
 
-        chunks = [chunk for chunk, _ in results]
-        scores = [score for _, score in results]
-        
-        # If we found a direct class match, prioritize it at the top
+        # If we found a direct class match, prioritize it
         if direct_class_chunk:
-            # For schema queries, use ALL class chunks instead of just semantic search
             if is_schema_query and all_class_chunks:
-                # Replace semantic search results with all class chunks for complete context
                 chunks = all_class_chunks
-                scores = [1.0] * len(chunks)  # Perfect match scores
-                print(f"[DEBUG] Using all {len(chunks)} chunks for schema generation", file=__import__('sys').stderr)
+                scores = [1.0] * len(chunks)
+                print(
+                    f"[DEBUG] Using all {len(chunks)} chunks for schema",
+                    file=sys.stderr,
+                )
             else:
-                # Remove the direct class chunk from semantic results if it's there
                 chunks = [c for c in chunks if c.id != direct_class_chunk.id]
-                scores = scores[:len(chunks)]  # Adjust scores to match
-                
-                # Put the direct class chunk first
+                scores = scores[: len(chunks)]
                 chunks.insert(0, direct_class_chunk)
-                scores.insert(0, 1.0)  # Perfect match score
+                scores.insert(0, 1.0)
 
         # Optionally fetch dependencies
         dependencies = []
@@ -218,31 +221,34 @@ about which classes are indexed, use the complete list above.
 
         # Build context from chunks and dependencies
         context = self._build_context(chunks, dependencies)
-        
-        # For list/count queries, use ONLY the complete list - remove code snippets
-        # This ensures LLM focuses on the complete database record
+
+        # For list/count queries, use ONLY the complete list
         if is_list_count_query and is_class_query and all_classes_list:
-            # Build the complete list as the ONLY context
             class_summaries = []
-            for cls in sorted(all_classes_list, key=lambda c: c.class_name or c.file_path):
+            for cls in sorted(
+                all_classes_list, key=lambda c: c.class_name or c.file_path
+            ):
                 class_name = cls.class_name or Path(cls.file_path).stem
                 location = f"{cls.file_path}:{cls.start_line}-{cls.end_line}"
                 class_summaries.append(f"{class_name} ({location})")
-            
-            # Create context with ONLY the complete list - no code snippets
+
             context = f"""DATABASE QUERY RESULT - ALL {len(all_classes_list)} INDEXED CLASSES
 
 This is a direct database query result showing ALL classes indexed in the system.
 
-{chr(10).join(f"{i+1}. {cls}" for i, cls in enumerate(class_summaries))}
+{chr(10).join(f"{i + 1}. {cls}" for i, cls in enumerate(class_summaries))}
 
 Total: {len(all_classes_list)} classes."""
-            
-            # Debug output
-            print(f"[DEBUG] List query detected. Using ONLY complete list ({len(all_classes)} classes). Code snippets excluded.", file=__import__('sys').stderr)
-        
+
+            print(
+                f"[DEBUG] Using ONLY complete list ({len(all_classes_list)} classes).",
+                file=sys.stderr,
+            )
+
         # Generate answer using LLM
-        answer = self._generate_answer(question, context, is_list_query=(is_list_count_query and is_class_query))
+        answer = self._generate_answer(
+            question, context, is_list_query=(is_list_count_query and is_class_query)
+        )
 
         return RAGResponse(
             answer=answer,
@@ -251,7 +257,149 @@ Total: {len(all_classes_list)} classes."""
             query=question,
             model=self.llm_model,
             dependencies=dependencies if include_sources else [],
+            query_analysis=analysis,
         )
+
+    def _hybrid_search(
+        self,
+        question: str,
+        analysis: QueryAnalysis,
+        top_k: int,
+        language: Optional[str],
+        chunk_type: Optional[str],
+        min_similarity: float,
+        use_hybrid: bool = True,
+    ) -> tuple[list[CodeChunk], list[float]]:
+        """Perform hybrid search combining semantic and keyword search.
+
+        Uses Reciprocal Rank Fusion (RRF) to merge results from both
+        search methods, providing better accuracy than either alone.
+
+        Args:
+            question: Original question
+            analysis: Query analysis results
+            top_k: Number of results to return
+            language: Language filter
+            chunk_type: Chunk type filter
+            min_similarity: Minimum similarity threshold
+            use_hybrid: Whether to use hybrid search
+
+        Returns:
+            Tuple of (chunks, scores)
+        """
+        # Semantic search - embed the question
+        query_embedding = self.embedder.embed_text(question)
+
+        # Fetch more candidates for hybrid merging
+        semantic_top_k = top_k * 2 if use_hybrid else top_k
+
+        semantic_results = self.store.search(
+            query_embedding=query_embedding,
+            top_k=semantic_top_k,
+            language=language,
+            chunk_type=chunk_type,
+            min_similarity=min_similarity,
+        )
+
+        print(
+            f"[DEBUG] Semantic search: {len(semantic_results)} results "
+            f"(threshold={min_similarity})",
+            file=sys.stderr,
+        )
+
+        if not use_hybrid:
+            chunks = [chunk for chunk, _ in semantic_results[:top_k]]
+            scores = [score for _, score in semantic_results[:top_k]]
+            return chunks, scores
+
+        # Keyword search using extracted and expanded terms
+        keywords = get_keywords_for_search(analysis)
+        all_keywords = keywords + analysis.expanded_terms[:5]
+
+        keyword_results = self.store.keyword_search(
+            keywords=all_keywords,
+            top_k=top_k,
+            language=language,
+            chunk_type=chunk_type,
+        )
+
+        print(
+            f"[DEBUG] Keyword search: {len(keyword_results)} results "
+            f"for {len(all_keywords)} keywords",
+            file=sys.stderr,
+        )
+
+        # Merge results using Reciprocal Rank Fusion (RRF)
+        merged = self._merge_results_rrf(
+            semantic_results=semantic_results,
+            keyword_results=keyword_results,
+            top_k=top_k,
+        )
+
+        print(f"[DEBUG] Merged results: {len(merged)} chunks", file=sys.stderr)
+
+        chunks = [chunk for chunk, _ in merged]
+        scores = [score for _, score in merged]
+
+        return chunks, scores
+
+    def _merge_results_rrf(
+        self,
+        semantic_results: list[tuple[CodeChunk, float]],
+        keyword_results: list[tuple[CodeChunk, float]],
+        top_k: int,
+        k: int = 60,
+    ) -> list[tuple[CodeChunk, float]]:
+        """Merge results using Reciprocal Rank Fusion.
+
+        RRF score = sum(1 / (k + rank)) for each result list.
+        This method is effective at combining results from different
+        ranking systems without needing score normalization.
+
+        Args:
+            semantic_results: Results from semantic search
+            keyword_results: Results from keyword search
+            top_k: Number of results to return
+            k: RRF constant (higher = less aggressive ranking)
+
+        Returns:
+            Merged list of (chunk, score) tuples
+        """
+        chunk_scores: dict[str, tuple[CodeChunk, float]] = {}
+
+        # Score semantic results
+        for rank, (chunk, _) in enumerate(semantic_results):
+            rrf_score = 1.0 / (k + rank + 1)
+            if chunk.id in chunk_scores:
+                existing_chunk, existing_score = chunk_scores[chunk.id]
+                chunk_scores[chunk.id] = (existing_chunk, existing_score + rrf_score)
+            else:
+                chunk_scores[chunk.id] = (chunk, rrf_score)
+
+        # Score keyword results (with slight boost for exact matches)
+        for rank, (chunk, _) in enumerate(keyword_results):
+            rrf_score = 1.0 / (k + rank + 1) * 1.1  # 10% boost for keyword matches
+            if chunk.id in chunk_scores:
+                existing_chunk, existing_score = chunk_scores[chunk.id]
+                chunk_scores[chunk.id] = (existing_chunk, existing_score + rrf_score)
+            else:
+                chunk_scores[chunk.id] = (chunk, rrf_score)
+
+        # Sort by combined score
+        sorted_results = sorted(
+            chunk_scores.values(),
+            key=lambda x: x[1],
+            reverse=True,
+        )
+
+        # Normalize scores to 0-1 range
+        if sorted_results:
+            max_score = sorted_results[0][1]
+            sorted_results = [
+                (chunk, score / max_score) for chunk, score in sorted_results
+            ]
+
+        return sorted_results[:top_k]
 
     def query_with_dependencies(
         self,
@@ -501,16 +649,18 @@ Total: {len(all_classes_list)} classes."""
 
         return "\n\n".join(context_parts)
 
-    def _generate_answer(self, question: str, context: str, is_list_query: bool = False) -> str:
+    def _generate_answer(
+        self, question: str, context: str, is_list_query: bool = False
+    ) -> str:
         """Generate an answer using the LLM."""
         # Check if context contains a complete class list
         has_complete_list = "DATABASE QUERY RESULT" in context or is_list_query
-        
+
         if has_complete_list or is_list_query:
             # Extract the count from the context
-            count_match = re.search(r'ALL (\d+) INDEXED CLASSES', context)
+            count_match = re.search(r"ALL (\d+) INDEXED CLASSES", context)
             total_count = count_match.group(1) if count_match else "all"
-            
+
             # Override system prompt for list queries - make it crystal clear
             system_instruction = f"""You are answering a question about which classes are indexed in a codebase.
 
@@ -521,7 +671,7 @@ Your task:
 - Do NOT say "I can only see X classes" - you have ALL {total_count} classes
 - Do NOT reference "code snippets" - this is a database query result
 - Provide a complete, numbered list of all classes"""
-            
+
             prompt = f"""You have been given a database query result showing all indexed classes:
 
 {context}

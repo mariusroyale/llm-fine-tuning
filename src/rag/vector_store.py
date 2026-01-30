@@ -142,7 +142,7 @@ class PgVectorStore:
             for chunk, embedding in zip(chunks, embeddings):
                 # Convert embedding to numpy array for pgvector adapter
                 embedding_vec = np.array(embedding, dtype=np.float32)
-                
+
                 cur.execute(
                     f"""
                     INSERT INTO {self.table_name}
@@ -191,6 +191,7 @@ class PgVectorStore:
         language: Optional[str] = None,
         chunk_type: Optional[str] = None,
         file_path_prefix: Optional[str] = None,
+        min_similarity: float = 0.0,
     ) -> list[tuple[CodeChunk, float]]:
         """Search for similar chunks using cosine similarity.
 
@@ -200,6 +201,7 @@ class PgVectorStore:
             language: Filter by language
             chunk_type: Filter by chunk type
             file_path_prefix: Filter by file path prefix
+            min_similarity: Minimum similarity threshold (0.0-1.0)
 
         Returns:
             List of (chunk, similarity_score) tuples, ordered by similarity
@@ -225,7 +227,7 @@ class PgVectorStore:
         # Convert query_embedding to numpy array for pgvector
         # pgvector adapter (registered via register_vector) will convert numpy array to vector type
         query_vec = np.array(query_embedding, dtype=np.float32)
-        
+
         query = f"""
             SELECT
                 id, content, language, chunk_type, file_path,
@@ -250,6 +252,10 @@ class PgVectorStore:
 
         results = []
         for row in rows:
+            similarity = row[12]
+            # Apply minimum similarity threshold
+            if similarity < min_similarity:
+                continue
             references = row[10] if row[10] else []
             # Metadata is JSONB, so psycopg3 returns it as a dict already
             metadata = row[11] if row[11] else {}
@@ -269,8 +275,117 @@ class PgVectorStore:
                 references=references,
                 metadata=metadata,
             )
-            similarity = row[12]
             results.append((chunk, similarity))
+
+        return results
+
+    def keyword_search(
+        self,
+        keywords: list[str],
+        top_k: int = 10,
+        language: Optional[str] = None,
+        chunk_type: Optional[str] = None,
+    ) -> list[tuple[CodeChunk, float]]:
+        """Search for chunks containing keywords using full-text search.
+
+        Args:
+            keywords: List of keywords to search for
+            top_k: Number of results to return
+            language: Filter by language
+            chunk_type: Filter by chunk type
+
+        Returns:
+            List of (chunk, relevance_score) tuples
+        """
+        if not keywords:
+            return []
+
+        # Build WHERE clause for filters
+        conditions = []
+        params = []
+
+        if language:
+            conditions.append("language = %s")
+            params.append(language)
+        if chunk_type:
+            conditions.append("chunk_type = %s")
+            params.append(chunk_type)
+
+        # Build keyword matching - search in content, class_name, method_name, documentation
+        keyword_conditions = []
+        for keyword in keywords:
+            keyword_lower = keyword.lower()
+            keyword_conditions.append(
+                "(LOWER(content) LIKE %s OR LOWER(COALESCE(class_name, '')) LIKE %s OR "
+                "LOWER(COALESCE(method_name, '')) LIKE %s OR LOWER(COALESCE(documentation, '')) LIKE %s)"
+            )
+            pattern = f"%{keyword_lower}%"
+            params.extend([pattern, pattern, pattern, pattern])
+
+        if keyword_conditions:
+            conditions.append(f"({' OR '.join(keyword_conditions)})")
+
+        where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
+
+        # Calculate a simple relevance score based on keyword matches
+        # Higher score = more keywords matched
+        score_cases = []
+        for keyword in keywords:
+            keyword_lower = keyword.lower()
+            score_cases.append(
+                f"CASE WHEN LOWER(content) LIKE %s THEN 1 ELSE 0 END + "
+                f"CASE WHEN LOWER(COALESCE(class_name, '')) LIKE %s THEN 2 ELSE 0 END + "
+                f"CASE WHEN LOWER(COALESCE(method_name, '')) LIKE %s THEN 2 ELSE 0 END"
+            )
+            pattern = f"%{keyword_lower}%"
+            params.extend([pattern, pattern, pattern])
+
+        score_expression = " + ".join(score_cases) if score_cases else "0"
+        max_possible_score = (
+            len(keywords) * 5
+        )  # 1 for content + 2 for class + 2 for method
+
+        query = f"""
+            SELECT
+                id, content, language, chunk_type, file_path,
+                start_line, end_line, class_name, method_name,
+                documentation, "references", metadata,
+                ({score_expression})::float / {max_possible_score} as relevance
+            FROM {self.table_name}
+            {where_clause}
+            ORDER BY relevance DESC
+            LIMIT %s
+        """
+        params.append(top_k)
+
+        with self._conn.cursor() as cur:
+            cur.execute(query, params)
+            rows = cur.fetchall()
+
+        results = []
+        for row in rows:
+            relevance = row[12]
+            if relevance <= 0:
+                continue
+            references = row[10] if row[10] else []
+            metadata = row[11] if row[11] else {}
+            if isinstance(metadata, str):
+                metadata = json.loads(metadata)
+            chunk = CodeChunk(
+                id=row[0],
+                content=row[1],
+                language=row[2],
+                chunk_type=row[3],
+                file_path=row[4],
+                start_line=row[5],
+                end_line=row[6],
+                class_name=row[7],
+                method_name=row[8],
+                documentation=row[9],
+                references=references,
+                metadata=metadata,
+            )
+            results.append((chunk, relevance))
 
         return results
 
@@ -377,10 +492,10 @@ class PgVectorStore:
 
     def get_all_chunks_for_class(self, class_name: str) -> list[CodeChunk]:
         """Get all chunks (class + methods) for a specific class.
-        
+
         Args:
             class_name: Class name to find
-            
+
         Returns:
             List of all chunks for this class
         """
@@ -468,22 +583,22 @@ class PgVectorStore:
 
     def list_classes(self, language: Optional[str] = None) -> list[CodeChunk]:
         """List all class chunks, optionally filtered by language.
-        
+
         Args:
             language: Filter by language (e.g., 'java')
-            
+
         Returns:
             List of CodeChunk objects for classes
         """
         conditions = ["chunk_type = 'class'"]
         params = []
-        
+
         if language:
             conditions.append("language = %s")
             params.append(language)
-        
+
         where_clause = "WHERE " + " AND ".join(conditions)
-        
+
         with self._conn.cursor() as cur:
             cur.execute(
                 f"""
@@ -498,7 +613,7 @@ class PgVectorStore:
                 params,
             )
             rows = cur.fetchall()
-        
+
         results = []
         for row in rows:
             references = row[10] if row[10] else []
@@ -506,22 +621,24 @@ class PgVectorStore:
             metadata = row[11] if row[11] else {}
             if isinstance(metadata, str):
                 metadata = json.loads(metadata)
-            
-            results.append(CodeChunk(
-                id=row[0],
-                content=row[1],
-                language=row[2],
-                chunk_type=row[3],
-                file_path=row[4],
-                start_line=row[5],
-                end_line=row[6],
-                class_name=row[7],
-                method_name=row[8],
-                documentation=row[9],
-                references=references,
-                metadata=metadata,
-            ))
-        
+
+            results.append(
+                CodeChunk(
+                    id=row[0],
+                    content=row[1],
+                    language=row[2],
+                    chunk_type=row[3],
+                    file_path=row[4],
+                    start_line=row[5],
+                    end_line=row[6],
+                    class_name=row[7],
+                    method_name=row[8],
+                    documentation=row[9],
+                    references=references,
+                    metadata=metadata,
+                )
+            )
+
         return results
 
     def get_stats(self) -> dict:
