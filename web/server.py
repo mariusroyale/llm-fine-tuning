@@ -12,7 +12,7 @@ from pydantic import BaseModel
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.rag import RAGRetriever
+from src.rag import CodeRetriever
 from src.rag.query_analyzer import analyze_query
 
 app = FastAPI(title="Koda API", version="1.0.0")
@@ -27,10 +27,10 @@ app.add_middleware(
 )
 
 # Global retriever instance
-retriever: Optional[RAGRetriever] = None
+retriever: Optional[CodeRetriever] = None
 
 
-def get_retriever() -> Optional[RAGRetriever]:
+def get_retriever() -> Optional[CodeRetriever]:
     """Get or initialize the RAG retriever."""
     global retriever
     if retriever is None:
@@ -39,7 +39,7 @@ def get_retriever() -> Optional[RAGRetriever]:
             print("WARNING: GCP_PROJECT_ID not set, retriever unavailable")
             return None
         try:
-            retriever = RAGRetriever(
+            retriever = CodeRetriever(
                 project_id=project_id,
                 location=os.environ.get("GCP_LOCATION", "us-central1"),
                 model_id=os.environ.get("LLM_MODEL", "gemini-2.5-flash"),
