@@ -99,38 +99,71 @@ class PgVectorStore:
                 )
             """)
 
-            # Create index for vector similarity search
-            cur.execute(f"""
-                CREATE INDEX IF NOT EXISTS {self.table_name}_embedding_idx
-                ON {self.table_name}
-                USING ivfflat (embedding vector_cosine_ops)
-                WITH (lists = 100)
-            """)
-
-            # Create index for file path lookups
+            # Create index for file path lookups (fast, can create on empty table)
             cur.execute(f"""
                 CREATE INDEX IF NOT EXISTS {self.table_name}_file_path_idx
                 ON {self.table_name} (file_path)
             """)
 
             self._conn.commit()
+        
+        # Note: Vector index (IVFFlat) is created after data insertion for better performance
+        # See create_vector_index() method
 
     def drop_table(self) -> None:
-        """Drop the chunks table."""
+        """Drop the chunks table and its indexes.
+        
+        Uses CASCADE to ensure all dependent objects are dropped.
+        """
         with self._conn.cursor() as cur:
-            cur.execute(f"DROP TABLE IF EXISTS {self.table_name}")
+            # Use CASCADE to drop everything in one go
+            # This is faster and more reliable than dropping indexes separately
+            cur.execute(f"DROP TABLE IF EXISTS {self.table_name} CASCADE")
             self._conn.commit()
+    
+    def create_vector_index(self) -> None:
+        """Create the IVFFlat vector index after data is inserted.
+        
+        IVFFlat indexes work better when created after data exists.
+        This should be called after bulk inserts for optimal performance.
+        """
+        with self._conn.cursor() as cur:
+            # Check if index already exists
+            cur.execute(f"""
+                SELECT COUNT(*) FROM pg_indexes 
+                WHERE indexname = '{self.table_name}_embedding_idx'
+            """)
+            exists = cur.fetchone()[0] > 0
+            
+            if not exists:
+                # Calculate optimal lists parameter based on row count
+                cur.execute(f"SELECT COUNT(*) FROM {self.table_name}")
+                row_count = cur.fetchone()[0]
+                
+                # IVFFlat lists should be rows / 1000 for good performance
+                # But cap between 10 and 1000
+                lists = max(10, min(1000, row_count // 1000))
+                
+                cur.execute(f"""
+                    CREATE INDEX {self.table_name}_embedding_idx
+                    ON {self.table_name}
+                    USING ivfflat (embedding vector_cosine_ops)
+                    WITH (lists = {lists})
+                """)
+                self._conn.commit()
 
     def upsert(
         self,
         chunks: list[CodeChunk],
         embeddings: list[list[float]],
+        batch_size: int = 500,
     ) -> int:
-        """Insert or update chunks with embeddings.
+        """Insert or update chunks with embeddings using batch inserts.
 
         Args:
             chunks: List of code chunks
             embeddings: Corresponding embedding vectors
+            batch_size: Number of chunks to insert per batch (default 500)
 
         Returns:
             Number of rows upserted
@@ -138,12 +171,38 @@ class PgVectorStore:
         if len(chunks) != len(embeddings):
             raise ValueError("Chunks and embeddings must have same length")
 
-        with self._conn.cursor() as cur:
-            for chunk, embedding in zip(chunks, embeddings):
-                # Convert embedding to numpy array for pgvector adapter
-                embedding_vec = np.array(embedding, dtype=np.float32)
+        total = len(chunks)
+        inserted = 0
 
-                cur.execute(
+        # Process in batches for better performance
+        for batch_start in range(0, total, batch_size):
+            batch_end = min(batch_start + batch_size, total)
+            batch_chunks = chunks[batch_start:batch_end]
+            batch_embeddings = embeddings[batch_start:batch_end]
+
+            with self._conn.cursor() as cur:
+                # Prepare batch data
+                batch_data = []
+                for chunk, embedding in zip(batch_chunks, batch_embeddings):
+                    embedding_vec = np.array(embedding, dtype=np.float32)
+                    batch_data.append((
+                        chunk.id,
+                        chunk.content,
+                        embedding_vec,
+                        chunk.language,
+                        chunk.chunk_type,
+                        chunk.file_path,
+                        chunk.start_line,
+                        chunk.end_line,
+                        chunk.class_name,
+                        chunk.method_name,
+                        chunk.documentation,
+                        chunk.references if chunk.references else None,
+                        json.dumps(chunk.metadata) if chunk.metadata else None,
+                    ))
+
+                # Use executemany for batch insert (much faster than individual inserts)
+                cur.executemany(
                     f"""
                     INSERT INTO {self.table_name}
                     (id, content, embedding, language, chunk_type, file_path,
@@ -163,26 +222,14 @@ class PgVectorStore:
                         "references" = EXCLUDED."references",
                         metadata = EXCLUDED.metadata
                     """,
-                    (
-                        chunk.id,
-                        chunk.content,
-                        embedding_vec,
-                        chunk.language,
-                        chunk.chunk_type,
-                        chunk.file_path,
-                        chunk.start_line,
-                        chunk.end_line,
-                        chunk.class_name,
-                        chunk.method_name,
-                        chunk.documentation,
-                        chunk.references if chunk.references else None,
-                        json.dumps(chunk.metadata) if chunk.metadata else None,
-                    ),
+                    batch_data,
                 )
 
+            # Commit after each batch to avoid long transactions
             self._conn.commit()
+            inserted += len(batch_chunks)
 
-        return len(chunks)
+        return inserted
 
     def search(
         self,

@@ -54,11 +54,13 @@ class CodeRetriever:
 
     DEFAULT_SYSTEM_PROMPT = """You are an expert software engineer assistant. Your task is to answer questions about a codebase using the provided code snippets as context.
 
-Guidelines:
-- Answer based ONLY on the provided code snippets
-- If the answer is not in the provided code, say so clearly
+CRITICAL RULES:
+- Answer based ONLY on the provided code snippets - show code examples by adapting/modifying the code from the snippets
+- If asked to "generate code" or "show how to add X", provide code examples BASED ON the patterns you see in the snippets (e.g., if snippets show Java enum, show Java enum code)
+- NEVER generate code in a different language than what's shown in the snippets (e.g., don't generate TypeScript if snippets are Java)
+- NEVER invent completely new code structures that don't exist in the snippets - adapt what's shown
 - Include specific file paths and line numbers when referencing code
-- Provide code snippets in your answer when relevant
+- If the answer is not in the provided code, say so clearly: "Based on the provided code snippets, I cannot find [what was asked]. The codebase may use a different approach or this may be defined elsewhere."
 - Be concise but thorough"""
 
     def __init__(
@@ -156,15 +158,88 @@ Guidelines:
         )
         is_schema_query = analysis.intent == QueryIntent.SCHEMA
 
+        # Detect if query is asking about an inner enum (e.g., "PaymentMethodConfig enum")
+        is_enum_query = "enum" in question_lower and analysis.class_names
+        
         # Try to find specific classes directly
         direct_class_chunk = None
         all_class_chunks = None
+        inner_enum_chunks = []
+        
         if analysis.class_names:
             for class_name in analysis.class_names:
+                # If query mentions "enum", also search for inner enum chunks
+                if is_enum_query:
+                    # First, try keyword search for qualified enum names
+                    enum_keyword_results = self.store.keyword_search(
+                        keywords=[f"{class_name}.Type", f"{class_name}.Category", class_name, "enum"],
+                        top_k=10,
+                        language=language,
+                        chunk_type="enum",
+                    )
+                    for enum_chunk, enum_score in enum_keyword_results:
+                        # Check if enum chunk's class_name starts with class_name (e.g., "PaymentMethodConfig.Type")
+                        # or if metadata has parent_class matching
+                        if enum_chunk.class_name and enum_chunk.class_name.startswith(f"{class_name}."):
+                            inner_enum_chunks.append((enum_chunk, enum_score))
+                        elif enum_chunk.metadata and enum_chunk.metadata.get("parent_class") == class_name:
+                            inner_enum_chunks.append((enum_chunk, enum_score))
+                    
+                    # Also try semantic search as fallback
+                    if not inner_enum_chunks:
+                        enum_query_embedding = self.embedder.embed_text(
+                            f"{class_name} enum inner enum Type Category"
+                        )
+                        enum_results = self.store.search(
+                            query_embedding=enum_query_embedding,
+                            top_k=5,
+                            language=language,
+                            chunk_type="enum",
+                            min_similarity=0.3,  # Lower threshold for enum search
+                        )
+                        # Filter for enums that belong to this class
+                        for enum_chunk, enum_score in enum_results:
+                            if enum_chunk.class_name and enum_chunk.class_name.startswith(f"{class_name}."):
+                                inner_enum_chunks.append((enum_chunk, enum_score))
+                            elif enum_chunk.metadata and enum_chunk.metadata.get("parent_class") == class_name:
+                                inner_enum_chunks.append((enum_chunk, enum_score))
+                    
+                    if inner_enum_chunks:
+                        print(
+                            f"[DEBUG] Found {len(inner_enum_chunks)} inner enum chunks for {class_name}",
+                            file=sys.stderr,
+                        )
+                    else:
+                        print(
+                            f"[DEBUG] No inner enum chunks found for {class_name} - may need re-indexing",
+                            file=sys.stderr,
+                        )
+                
+                # Try exact class name match first
                 direct_class_chunk = self.store.get_class_chunk(class_name)
+                
+                # If not found, try keyword search as fallback (in case of indexing issues)
+                if not direct_class_chunk:
+                    file_results = self.store.keyword_search(
+                        keywords=[class_name],
+                        top_k=10,
+                        language="java",
+                        chunk_type="class",
+                    )
+                    # Look for exact class name match in results
+                    for chunk, score in file_results:
+                        if chunk.class_name == class_name:
+                            direct_class_chunk = chunk
+                            print(
+                                f"[DEBUG] Found class match via keyword search fallback: {class_name}",
+                                file=sys.stderr,
+                            )
+                            break
+                
                 if direct_class_chunk:
                     print(
-                        f"[DEBUG] Found direct class match: {class_name}",
+                        f"[DEBUG] Found direct class match: {class_name} "
+                        f"(file: {direct_class_chunk.file_path})",
                         file=sys.stderr,
                     )
                     if is_schema_query:
@@ -176,6 +251,25 @@ Guidelines:
                             file=sys.stderr,
                         )
                     break
+                else:
+                    print(
+                        f"[DEBUG] No direct class match found for: {class_name}",
+                        file=sys.stderr,
+                    )
+                    # Diagnostic: check if similar class names exist
+                    if class_name:
+                        diagnostic_results = self.store.keyword_search(
+                            keywords=[class_name],
+                            top_k=3,
+                            language="java",
+                            chunk_type="class",
+                        )
+                        if diagnostic_results:
+                            similar_classes = [c.class_name for c, _ in diagnostic_results if c.class_name]
+                            print(
+                                f"[DEBUG] Found similar classes: {similar_classes}",
+                                file=sys.stderr,
+                            )
 
         # If asking to list/count classes, get ALL classes from database
         all_classes_list = None
@@ -188,6 +282,15 @@ Guidelines:
                     file=sys.stderr,
                 )
 
+        # For enum queries, lower similarity threshold to find more results
+        search_min_similarity = min_similarity
+        if is_enum_query and min_similarity > 0.3:
+            search_min_similarity = 0.3
+            print(
+                f"[DEBUG] Lowered similarity threshold to {search_min_similarity} for enum query",
+                file=sys.stderr,
+            )
+        
         # Perform hybrid search: combine semantic and keyword search
         chunks, scores = self._hybrid_search(
             question=question,
@@ -195,10 +298,79 @@ Guidelines:
             top_k=top_k,
             language=language,
             chunk_type=chunk_type,
-            min_similarity=min_similarity,
+            min_similarity=search_min_similarity,
             use_hybrid=use_hybrid_search,
         )
+        
+        # Boost exact class name matches if class names were mentioned in query
+        if analysis.class_names and not direct_class_chunk:
+            # Boost chunks that match exact class names from the query
+            boosted_chunks = []
+            boosted_scores = []
+            other_chunks = []
+            other_scores = []
+            
+            for chunk, score in zip(chunks, scores):
+                # Check for exact class name match
+                if chunk.class_name in analysis.class_names:
+                    # Very strong boost for exact class name match
+                    boosted_chunks.append(chunk)
+                    boosted_scores.append(min(1.0, score * 2.0))  # 2x boost
+                    print(
+                        f"[DEBUG] Boosted exact class match: {chunk.class_name} "
+                        f"(score: {score:.3f} -> {boosted_scores[-1]:.3f})",
+                        file=sys.stderr,
+                    )
+                # Also check if class_name contains the query class name (for qualified names)
+                elif any(class_name in (chunk.class_name or "") for class_name in analysis.class_names):
+                    # Moderate boost for partial match (e.g., "PaymentMethodConfig.Type" contains "PaymentMethodConfig")
+                    boosted_chunks.append(chunk)
+                    boosted_scores.append(min(1.0, score * 1.3))
+                    print(
+                        f"[DEBUG] Boosted partial class match: {chunk.class_name} "
+                        f"(contains {[cn for cn in analysis.class_names if cn in (chunk.class_name or '')]})",
+                        file=sys.stderr,
+                    )
+                else:
+                    other_chunks.append(chunk)
+                    other_scores.append(score)
+            
+            # Reorder: boosted chunks first, then others
+            if boosted_chunks:
+                chunks = boosted_chunks + other_chunks
+                scores = boosted_scores + other_scores
+                print(
+                    f"[DEBUG] Reordered results: {len(boosted_chunks)} boosted, {len(other_chunks)} others",
+                    file=sys.stderr,
+                )
 
+        # If we found inner enum chunks, prioritize them for enum queries
+        if inner_enum_chunks and is_enum_query:
+            enum_chunks = [c for c, _ in inner_enum_chunks]
+            enum_scores = [s for _, s in inner_enum_chunks]
+            # Remove enum chunks from main results to avoid duplicates
+            enum_ids = {c.id for c in enum_chunks}
+            chunks = [c for c in chunks if c.id not in enum_ids]
+            scores = scores[: len(chunks)]
+            # Prepend enum chunks with high scores
+            chunks = enum_chunks + chunks
+            scores = enum_scores + scores
+            print(
+                f"[DEBUG] Prioritized {len(enum_chunks)} inner enum chunks for enum query",
+                file=sys.stderr,
+            )
+        
+        # If we found the exact class but query is about enum, also include parent class for context
+        if direct_class_chunk and is_enum_query and not inner_enum_chunks:
+            # Add parent class chunk even if no inner enums found (for context)
+            if direct_class_chunk.id not in [c.id for c in chunks]:
+                chunks.insert(0, direct_class_chunk)
+                scores.insert(0, 1.0)
+                print(
+                    f"[DEBUG] Added parent class {direct_class_chunk.class_name} for enum query context",
+                    file=sys.stderr,
+                )
+        
         # If we found a direct class match, prioritize it
         if direct_class_chunk:
             if is_schema_query and all_class_chunks:
@@ -209,10 +381,12 @@ Guidelines:
                     file=sys.stderr,
                 )
             else:
-                chunks = [c for c in chunks if c.id != direct_class_chunk.id]
-                scores = scores[: len(chunks)]
-                chunks.insert(0, direct_class_chunk)
-                scores.insert(0, 1.0)
+                # Don't add class chunk if we already have enum chunks (they're more specific)
+                if not (inner_enum_chunks and is_enum_query):
+                    chunks = [c for c in chunks if c.id != direct_class_chunk.id]
+                    scores = scores[: len(chunks)]
+                    chunks.insert(0, direct_class_chunk)
+                    scores.insert(0, 1.0)
 
         # Optionally fetch dependencies
         dependencies = []
@@ -683,13 +857,31 @@ Question: {question}
 Answer by listing ALL classes from the database query result above. This is a complete list - use all of it."""
         else:
             system_instruction = self.system_prompt
-            prompt = f"""Based on the following code snippets from the codebase, answer the question.
+            
+            # Check if context is empty or very short (likely no good matches)
+            if not context or len(context.strip()) < 100:
+                prompt = f"""You were asked: {question}
+
+However, NO relevant code snippets were found in the codebase for this query.
+
+IMPORTANT: Do NOT generate or invent code. Instead, clearly state that you cannot find the requested information in the indexed codebase.
+
+Answer:"""
+            else:
+                prompt = f"""Based on the following code snippets from the codebase, answer the question.
 
 {context}
 
 ---
 
 Question: {question}
+
+INSTRUCTIONS:
+- If asked to "generate code" or "show how to add X", provide code examples by adapting the patterns from the snippets above
+- Use the SAME programming language as shown in the snippets (if snippets are Java, show Java code)
+- Base your code examples on the actual structure/patterns you see in the snippets
+- Include file paths and line numbers when referencing specific code
+- If you need to show how to add something new, adapt the existing patterns from the snippets
 
 Answer:"""
 

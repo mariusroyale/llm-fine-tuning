@@ -108,6 +108,7 @@ class CodeChunker:
         self.java_extractor = JavaExtractor(
             include_private=True,
             include_comments=include_documentation,
+            max_lines=10000,  # Increased to handle large files like PaymentMethodConfig.java (2563 lines)
         )
         self.generic_extractor = GenericExtractor()
 
@@ -294,6 +295,48 @@ class CodeChunker:
                     )
                 )
 
+        # Create inner enum/class chunks
+        if self.include_classes and java_class.inner_classes:
+            for inner_class in java_class.inner_classes:
+                # Only chunk enums and inner classes (not interfaces, they're usually small)
+                if inner_class.class_type in ("enum", "class"):
+                    enum_content = self._build_inner_type_content(inner_class, java_class)
+                    lines = enum_content.splitlines()
+
+                    if len(lines) < self.min_chunk_lines:
+                        continue
+                    if len(lines) > self.max_chunk_lines:
+                        # Truncate very long enums/classes
+                        enum_content = (
+                            "\n".join(lines[: self.max_chunk_lines]) + "\n// ... truncated"
+                        )
+
+                    # Use qualified name: ParentClass.InnerEnum
+                    qualified_name = f"{java_class.name}.{inner_class.name}"
+                    chunks.append(
+                        CodeChunk(
+                            id=self._generate_id(
+                                relative_path, qualified_name, inner_class.class_type
+                            ),
+                            content=enum_content,
+                            language="java",
+                            chunk_type=inner_class.class_type,
+                            file_path=relative_path,
+                            start_line=1,  # Will be approximate, could improve with source parsing
+                            end_line=len(lines),
+                            class_name=qualified_name,
+                            documentation=inner_class.documentation,
+                            references=self._extract_java_dependencies(inner_class),
+                            metadata={
+                                "package": inner_class.package,
+                                "class_type": inner_class.class_type,
+                                "parent_class": java_class.name,
+                                "extends": inner_class.extends,
+                                "implements": inner_class.implements,
+                            },
+                        )
+                    )
+
         return chunks
 
     def _chunk_generic_file(self, file_path: Path, base_path: Path) -> list[CodeChunk]:
@@ -424,6 +467,102 @@ class CodeChunker:
         modifiers = " ".join(method.modifiers)
         params = ", ".join([f"{ptype} {pname}" for ptype, pname in method.parameters])
         return f"{modifiers} {method.return_type} {method.name}({params})"
+
+    def _build_inner_type_content(self, inner_class, parent_class) -> str:
+        """Build the content for an inner enum or class chunk."""
+        parts = []
+
+        # Add context about the parent class
+        parts.append(f"// Inner {inner_class.class_type} from class: {parent_class.name}")
+        if parent_class.package:
+            parts.append(f"// Package: {parent_class.package}")
+
+        # Add documentation
+        if inner_class.documentation and self.include_documentation:
+            parts.append(inner_class.documentation)
+
+        # Add annotations
+        if inner_class.annotations:
+            parts.append("\n".join(inner_class.annotations))
+
+        # Build signature
+        modifiers = " ".join(inner_class.modifiers)
+        signature = f"{modifiers} {inner_class.class_type} {inner_class.name}"
+
+        if inner_class.extends:
+            signature += f" extends {inner_class.extends}"
+        if inner_class.implements:
+            signature += f" implements {', '.join(inner_class.implements)}"
+
+        parts.append(signature + " {")
+
+        # For enums, include enum constants from source code
+        if inner_class.class_type == "enum":
+            # Extract enum constants section from source code
+            # Enum constants are between the opening brace and the first semicolon or method/field
+            source_lines = inner_class.source_code.splitlines()
+            enum_constants_section = []
+            in_constants = False
+            brace_count = 0
+            
+            for i, line in enumerate(source_lines):
+                stripped = line.strip()
+                
+                # Find the enum declaration line
+                if not in_constants and "enum" in stripped and inner_class.name in stripped:
+                    # Count opening braces
+                    brace_count = stripped.count("{") - stripped.count("}")
+                    if brace_count > 0:
+                        in_constants = True
+                        # Include the declaration line
+                        enum_constants_section.append(line)
+                    continue
+                
+                if in_constants:
+                    brace_count += stripped.count("{") - stripped.count("}")
+                    
+                    # Include lines that look like enum constants (contain identifiers, commas, semicolons)
+                    # Stop when we hit methods, fields, or closing brace
+                    if stripped:
+                        # Check if this looks like a method or field declaration (starts with modifier or type)
+                        if any(stripped.startswith(mod) for mod in ["public", "private", "protected", "static", "final"]):
+                            if "(" in stripped or ";" in stripped and "," not in stripped:
+                                # Likely a method or field, stop collecting constants
+                                break
+                        
+                        enum_constants_section.append(line)
+                    
+                    # Stop if we've closed all braces (end of enum body)
+                    if brace_count <= 0 and stripped.startswith("}"):
+                        break
+            
+            if enum_constants_section:
+                # Limit to reasonable size
+                if len(enum_constants_section) > 100:
+                    enum_constants_section = enum_constants_section[:100]
+                    enum_constants_section.append("    // ... (truncated)")
+                parts.append("\n".join(enum_constants_section))
+            else:
+                # Fallback: include first portion of source
+                parts.append("    // Enum constants:")
+                relevant_lines = source_lines[:min(30, len(source_lines))]
+                parts.append("\n".join(relevant_lines))
+                if len(source_lines) > 30:
+                    parts.append("    // ...")
+
+        # Add fields
+        for field in inner_class.fields:
+            field_mods = " ".join(field.get("modifiers", []))
+            parts.append(f"    {field_mods} {field['type']} {field['name']};")
+
+        # Add method signatures
+        for method in inner_class.methods:
+            method_sig = self._get_method_signature(method)
+            parts.append(f"\n    {method_sig}")
+
+        parts.append("}")
+
+        return "\n".join(parts)
 
     def _get_relative_path(self, file_path: str, base_path: Path) -> str:
         """Get relative path from base."""

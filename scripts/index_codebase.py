@@ -304,8 +304,14 @@ def main(
 
         if reset:
             console.print("[yellow]Resetting table...[/yellow]")
-            store.drop_table()
+            try:
+                store.drop_table()
+                console.print("[green]Table dropped[/green]")
+            except Exception as e:
+                console.print(f"[yellow]Warning during table drop: {e}[/yellow]")
+                console.print("[yellow]Continuing anyway...[/yellow]")
 
+        console.print("[dim]Creating table...[/dim]")
         store.create_table()
 
         with Progress(
@@ -313,9 +319,21 @@ def main(
             TextColumn("[progress.description]{task.description}"),
             console=console,
         ) as progress:
-            task = progress.add_task("Inserting chunks...", total=None)
-            count = store.upsert(filtered_chunks, embeddings)
-            progress.update(task, completed=True)
+            task = progress.add_task(
+                f"Inserting {len(filtered_chunks)} chunks...", 
+                total=len(filtered_chunks)
+            )
+            count = store.upsert(filtered_chunks, embeddings, batch_size=500)
+            progress.update(task, completed=len(filtered_chunks))
+
+        # Create vector index after data is inserted (better performance)
+        console.print("[dim]Creating vector index...[/dim]")
+        try:
+            store.create_vector_index()
+            console.print("[green]Vector index created[/green]")
+        except Exception as e:
+            console.print(f"[yellow]Warning: Could not create vector index: {e}[/yellow]")
+            console.print("[yellow]Search will still work but may be slower[/yellow]")
 
         console.print(f"[green]Indexed {count} chunks[/green]")
 

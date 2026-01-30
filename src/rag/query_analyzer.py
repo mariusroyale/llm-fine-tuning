@@ -104,13 +104,28 @@ def analyze_query(question: str) -> QueryAnalysis:
     question_lower = question.lower().strip()
 
     # Extract potential class names (PascalCase)
-    class_names = re.findall(
+    # Exclude common words and single letters
+    common_words = {
+        "I", "A", "The", "How", "What", "When", "Where", "Why", "Which", "Who",
+        "This", "That", "These", "Those", "It", "Is", "Are", "Was", "Were",
+        "Has", "Have", "Had", "Do", "Does", "Did", "Will", "Would", "Should",
+        "Can", "Could", "May", "Might", "Must", "Shall", "To", "From", "For",
+        "With", "Without", "By", "In", "On", "At", "Of", "And", "Or", "But",
+    }
+    
+    raw_class_names = re.findall(
         r"\b([A-Z][a-zA-Z0-9]*(?:Bean|Facade|Record|Data|Config|Type|Service|"
         r"Manager|Handler|Controller|Utils|Helper|Factory|Builder|Parser|"
         r"Writer|Reader|Exception|Error|Interface|Abstract|Repository|Dao|"
         r"Entity|Model|Dto|Request|Response)?)\b",
         question,
     )
+    
+    # Filter out common words and single letters, require at least 2 characters
+    class_names = [
+        name for name in raw_class_names
+        if len(name) >= 2 and name not in common_words
+    ]
 
     # Extract potential method names (camelCase starting with lowercase)
     method_names = re.findall(
@@ -149,20 +164,33 @@ def analyze_query(question: str) -> QueryAnalysis:
 def _detect_intent(question_lower: str) -> QueryIntent:
     """Detect the intent of a query."""
 
-    # List/count queries
+    # List/count queries - be more specific to avoid false positives
+    # "which class" (singular) = asking for specific recommendation, NOT a list
+    # "which classes" (plural) = asking for a list
     list_patterns = [
-        "list",
+        "list all",
+        "list the",
         "show all",
+        "what are all",
         "what are the",
-        "which",
+        "which classes",  # plural - this is a list query
+        "which methods",  # plural
+        "which files",    # plural
+        "which ones",     # plural
+        "which all",
         "how many",
         "count",
         "enumerate",
         "all the",
-        "indexed",
+        "all indexed",
+        "all classes",
+        "all methods",
     ]
     if any(p in question_lower for p in list_patterns):
         return QueryIntent.LIST_COUNT
+    
+    # "which" + singular noun = asking for specific recommendation (definition/explanation)
+    # Don't treat as list - let it fall through to other intent detection
 
     # Schema queries
     schema_patterns = [
@@ -233,6 +261,11 @@ def _detect_intent(question_lower: str) -> QueryIntent:
         "how are",
         "what happens when",
         "walk through",
+        "which class will",
+        "which method will",
+        "which should",
+        "which would",
+        "which can",
     ]
     if any(p in question_lower for p in explanation_patterns):
         return QueryIntent.EXPLANATION
