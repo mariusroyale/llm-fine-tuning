@@ -12,6 +12,7 @@ interface UseChatReturn {
   messages: ChatMessage[];
   isConnected: boolean;
   isLoading: boolean;
+  statusMessage: string | null;
   sendQuestion: (question: string) => void;
   clearMessages: () => void;
   settings: Settings;
@@ -44,6 +45,7 @@ export function useChat(): UseChatReturn {
   const [currentMessageId, setCurrentMessageId] = useState<string | null>(null);
   const [pendingSources, setPendingSources] = useState<Source[]>([]);
   const [pendingAnalysis, setPendingAnalysis] = useState<QueryAnalysis | null>(null);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [settings, setSettings] = useState<Settings>({
     language: '',
     hybridSearch: true,
@@ -55,59 +57,77 @@ export function useChat(): UseChatReturn {
   });
 
   const handleMessage = useCallback((message: WSMessage) => {
-    switch (message.type) {
-      case 'status':
-        // Update loading message text if needed
-        break;
+    try {
+      switch (message.type) {
+        case 'status':
+          // Update status message for progress display
+          setStatusMessage(message.content as string);
+          break;
 
-      case 'analysis':
-        setPendingAnalysis(message.content as QueryAnalysis);
-        break;
+        case 'analysis':
+          setPendingAnalysis(message.content as QueryAnalysis);
+          break;
 
-      case 'sources':
-        const sources = message.content as Source[];
-        setPendingSources(sources);
-        setStats(prev => ({
-          ...prev,
-          sourcesRetrieved: prev.sourcesRetrieved + sources.length,
-        }));
-        break;
+        case 'sources':
+          const sources = message.content as Source[];
+          if (Array.isArray(sources)) {
+            setPendingSources(sources);
+            setStats(prev => ({
+              ...prev,
+              sourcesRetrieved: prev.sourcesRetrieved + sources.length,
+            }));
+          } else {
+            console.warn('[WebSocket] Sources message content is not an array:', sources);
+            setPendingSources([]);
+          }
+          break;
 
-      case 'answer':
-        setMessages(prev => prev.map(msg =>
-          msg.id === currentMessageId
-            ? {
-                ...msg,
-                content: message.content as string,
-                sources: pendingSources,
-                analysis: pendingAnalysis || undefined,
-                isLoading: false,
-              }
-            : msg
-        ));
-        setPendingSources([]);
-        setPendingAnalysis(null);
-        break;
+        case 'answer':
+          setMessages(prev => prev.map(msg =>
+            msg.id === currentMessageId
+              ? {
+                  ...msg,
+                  content: message.content as string,
+                  sources: pendingSources,
+                  analysis: pendingAnalysis || undefined,
+                  isLoading: false,
+                }
+              : msg
+          ));
+          setPendingSources([]);
+          setPendingAnalysis(null);
+          setStatusMessage(null);
+          break;
 
-      case 'done':
-        setIsLoading(false);
-        setCurrentMessageId(null);
-        break;
+        case 'done':
+          setIsLoading(false);
+          setCurrentMessageId(null);
+          setStatusMessage(null);
+          break;
 
-      case 'error':
-        setMessages(prev => prev.map(msg =>
-          msg.id === currentMessageId
-            ? {
-                ...msg,
-                content: '',
-                error: message.content as string,
-                isLoading: false,
-              }
-            : msg
-        ));
-        setIsLoading(false);
-        setCurrentMessageId(null);
-        break;
+        case 'error':
+          setMessages(prev => prev.map(msg =>
+            msg.id === currentMessageId
+              ? {
+                  ...msg,
+                  content: '',
+                  error: message.content as string,
+                  isLoading: false,
+                }
+              : msg
+          ));
+          setIsLoading(false);
+          setCurrentMessageId(null);
+          setStatusMessage(null);
+          break;
+
+        default:
+          // Ignore unknown message types (like "start")
+          console.warn('[WebSocket] Unknown message type:', (message as any).type);
+          break;
+      }
+    } catch (error) {
+      console.error('[WebSocket] Error handling message:', error, message);
     }
   }, [currentMessageId, pendingSources, pendingAnalysis]);
 
@@ -161,6 +181,7 @@ export function useChat(): UseChatReturn {
     messages,
     isConnected,
     isLoading,
+    statusMessage,
     sendQuestion,
     clearMessages,
     settings,

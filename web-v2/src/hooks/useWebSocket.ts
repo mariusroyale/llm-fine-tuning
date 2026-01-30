@@ -31,6 +31,13 @@ export function useWebSocket(
     null,
   );
 
+  const onMessageRef = useRef(onMessage);
+  
+  // Update ref when onMessage changes, but don't recreate connection
+  useEffect(() => {
+    onMessageRef.current = onMessage;
+  }, [onMessage]);
+
   const connect = useCallback(() => {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${protocol}//${window.location.host}/ws/chat`;
@@ -44,8 +51,12 @@ export function useWebSocket(
       reconnectCountRef.current = 0;
     };
 
-    ws.onclose = () => {
-      console.log("[WebSocket] Disconnected");
+    ws.onclose = (event) => {
+      console.log("[WebSocket] Disconnected", {
+        code: event.code,
+        reason: event.reason,
+        wasClean: event.wasClean,
+      });
       setIsConnected(false);
       wsRef.current = null;
 
@@ -69,13 +80,15 @@ export function useWebSocket(
     ws.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data) as WSMessage;
+        console.log("[WebSocket] Received message:", message.type);
         setLastMessage(message);
-        onMessage?.(message);
+        // Use ref to call latest onMessage without recreating connection
+        onMessageRef.current?.(message);
       } catch (error) {
-        console.error("[WebSocket] Failed to parse message:", error);
+        console.error("[WebSocket] Failed to parse message:", error, event.data);
       }
     };
-  }, [onMessage, reconnectAttempts, reconnectInterval]);
+  }, [reconnectAttempts, reconnectInterval]);
 
   const sendMessage = useCallback((request: QueryRequest) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {

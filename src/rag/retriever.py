@@ -693,17 +693,28 @@ Question: {question}
 
 Answer:"""
 
-        response = self.client.models.generate_content(
-            model=self.llm_model,
-            contents=prompt,
-            config={
-                "system_instruction": system_instruction,
-                "temperature": 0.3,
-                "max_output_tokens": 8192,  # Increased to allow full class listings
-            },
-        )
-
-        return response.text
+        print(f"[DEBUG] Calling LLM ({self.llm_model}) with prompt length: {len(prompt)} chars", file=sys.stderr)
+        print(f"[DEBUG] Context length: {len(context)} chars", file=sys.stderr)
+        
+        try:
+            response = self.client.models.generate_content(
+                model=self.llm_model,
+                contents=prompt,
+                config={
+                    "system_instruction": system_instruction,
+                    "temperature": 0.3,
+                    "max_output_tokens": 8192,  # Increased to allow full class listings
+                },
+            )
+            
+            answer_text = response.text
+            print(f"[DEBUG] LLM response received, length: {len(answer_text)} chars", file=sys.stderr)
+            return answer_text
+        except Exception as e:
+            print(f"[ERROR] LLM call failed: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            raise
 
 
 class InteractiveRetriever:

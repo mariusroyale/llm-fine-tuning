@@ -9,10 +9,11 @@ import type { ChatMessage, Source } from "../types";
 interface MessageProps {
   message: ChatMessage;
   showSources: boolean;
+  statusMessage?: string | null;
   onViewSources?: (sources: Source[]) => void;
 }
 
-function ThinkingIndicator() {
+function ThinkingIndicator({ statusMessage }: { statusMessage?: string | null }) {
   return (
     <div className="flex items-center gap-3 px-4 py-3">
       <div className="flex gap-1">
@@ -20,7 +21,9 @@ function ThinkingIndicator() {
         <span className="thinking-dot" />
         <span className="thinking-dot" />
       </div>
-      <span className="text-sm text-gray-500">Thinking...</span>
+      <span className="text-sm text-gray-500">
+        {statusMessage || "Thinking..."}
+      </span>
     </div>
   );
 }
@@ -61,7 +64,7 @@ function ClassBadge({ name }: { name: string }) {
   return <span className="badge-muted">{name}</span>;
 }
 
-export function Message({ message, showSources, onViewSources }: MessageProps) {
+export function Message({ message, showSources, statusMessage, onViewSources }: MessageProps) {
   const isUser = message.role === "user";
 
   return (
@@ -108,7 +111,7 @@ export function Message({ message, showSources, onViewSources }: MessageProps) {
         {/* Message bubble */}
         {message.isLoading ? (
           <div className="card">
-            <ThinkingIndicator />
+            <ThinkingIndicator statusMessage={statusMessage} />
           </div>
         ) : message.error ? (
           <div className="card border-error/30 bg-error/5">

@@ -60,6 +60,7 @@ function App() {
     messages,
     isConnected,
     isLoading,
+    statusMessage,
     sendQuestion,
     clearMessages,
     settings,
@@ -110,6 +111,7 @@ function App() {
                   key={message.id}
                   message={message}
                   showSources={settings.showSources}
+                  statusMessage={message.isLoading ? statusMessage : null}
                   onViewSources={handleViewSources}
                 />
               ))}

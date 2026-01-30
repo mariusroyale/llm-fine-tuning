@@ -24,8 +24,8 @@ services:
     volumes:
       # Mount source code for development
       - .:/app
-      # Mount GCP credentials
-      - ${GCLOUD_CONFIG_PATH:-~/.config/gcloud}:/root/.config/gcloud:ro
+      # Mount GCP credentials (use absolute path to avoid snap Docker path issues)
+      - /home/miordache/.config/gcloud:/root/.config/gcloud:ro
     environment:
       - GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
       - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
@@ -49,7 +49,8 @@ services:
       - "8080"
     volumes:
       - .:/app
-      - ${GCLOUD_CONFIG_PATH:-~/.config/gcloud}:/root/.config/gcloud:ro
+      # Mount GCP credentials (use absolute path to avoid snap Docker path issues)
+      - /home/miordache/.config/gcloud:/root/.config/gcloud:ro
     environment:
       - GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
       - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
