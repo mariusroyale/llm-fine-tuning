@@ -17,18 +17,18 @@ services:
       timeout: 5s
       retries: 5
 
-  # Main application
+  # Main application (CLI tools)
   app:
     build: .
     container_name: llm-fine-tuning
     volumes:
       # Mount source code for development
       - .:/app
-      # Mount GCP credentials (use absolute path to avoid snap Docker path issues)
-      # If using snap Docker, ${HOME} might point to snap directory, so use explicit path
-      - /home/miordache/.config/gcloud:/root/.config/gcloud:ro
+      # Mount GCP credentials
+      - ${GCLOUD_CONFIG_PATH:-~/.config/gcloud}:/root/.config/gcloud:ro
     environment:
       - GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
       - PGHOST=pgvector
       - PGPORT=5432
       - PGDATABASE=codebase_rag
@@ -40,6 +40,64 @@ services:
     # Keep container running for interactive use
     stdin_open: true
     tty: true
+
+  # Koda API Backend (Python/FastAPI)
+  koda-api:
+    build: .
+    container_name: koda-api
+    expose:
+      - "8080"
+    volumes:
+      - .:/app
+      - ${GCLOUD_CONFIG_PATH:-~/.config/gcloud}:/root/.config/gcloud:ro
+    environment:
+      - GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
+      - GCP_LOCATION=${GCP_LOCATION:-us-central1}
+      - LLM_MODEL=${LLM_MODEL:-gemini-2.5-flash}
+      - PGHOST=pgvector
+      - PGPORT=5432
+      - PGDATABASE=codebase_rag
+      - PGUSER=postgres
+      - PGPASSWORD=postgres
+      - HOST=0.0.0.0
+      - PORT=8080
+    depends_on:
+      pgvector:
+        condition: service_healthy
+    working_dir: /app/web
+    command:
+      [
+        "python3",
+        "-m",
+        "uvicorn",
+        "server:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8080",
+      ]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Koda Web Frontend (React + TypeScript)
+  koda:
+    build: ./web-v2
+    container_name: koda
+    ports:
+      - "8080:80"
+    depends_on:
+      koda-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
 volumes:
   pgvector_data:

@@ -618,6 +618,120 @@ Train the model to generate JSON templates from Java classes, and query with ful
 
 ---
 
+# Koda Web Interface
+
+Modern chat UI for querying your codebase.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  KODA - CODEBASE ASSISTANT                                                      │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+   ┌─────────────────────────────────────────────────────────────────────────────┐
+   │                                                                             │
+   │   Browser (localhost:8080)                                                  │
+   │   ┌─────────────────────────────────────────────────────────────────────┐   │
+   │   │                                                                     │   │
+   │   │  ┌──────────┐  ┌────────────────────────────────────────────────┐   │   │
+   │   │  │ Sidebar  │  │              Chat Area                         │   │   │
+   │   │  │          │  │                                                │   │   │
+   │   │  │ Settings │  │  [Koda] Hello! I'm Koda, your codebase        │   │   │
+   │   │  │ - Language│  │         assistant...                          │   │   │
+   │   │  │ - Hybrid  │  │                                                │   │   │
+   │   │  │   Search  │  │  [You] How does authentication work?          │   │   │
+   │   │  │ - Sources │  │                                                │   │   │
+   │   │  │          │  │  [Koda] Authentication is implemented in       │   │   │
+   │   │  │ Stats    │  │         AuthService.java:45-78...              │   │   │
+   │   │  │ - Questions│ │         ```java                                │   │   │
+   │   │  │ - Sources │  │         public AuthResult authenticate()...   │   │   │
+   │   │  │          │  │         ```                                    │   │   │
+   │   │  │          │  │         [3 sources]                            │   │   │
+   │   │  │          │  │                                                │   │   │
+   │   │  └──────────┘  │  ┌──────────────────────────────────────────┐  │   │   │
+   │   │                │  │ Ask about your codebase...          [↵]  │  │   │   │
+   │   │                │  └──────────────────────────────────────────┘  │   │   │
+   │   │                └────────────────────────────────────────────────┘   │   │
+   │   └─────────────────────────────────────────────────────────────────────┘   │
+   │                                                                             │
+   └──────────────────────────────────────┬──────────────────────────────────────┘
+                                          │ WebSocket
+                                          ▼
+   ┌─────────────────────────────────────────────────────────────────────────────┐
+   │  koda (nginx)                        │  koda-api (FastAPI)                  │
+   │  ┌─────────────────────────────┐     │  ┌─────────────────────────────┐     │
+   │  │  React SPA (TypeScript)     │     │  │  WebSocket /ws/chat         │     │
+   │  │  - TailwindCSS              │────▶│  │  REST /api/query            │     │
+   │  │  - Markdown rendering       │     │  │  Health /api/health         │     │
+   │  │  - Syntax highlighting      │     │  └──────────────┬──────────────┘     │
+   │  └─────────────────────────────┘     │                 │                    │
+   └──────────────────────────────────────┼─────────────────┼────────────────────┘
+                                          │                 │
+                                          │                 ▼
+                                          │  ┌─────────────────────────────┐
+                                          │  │  RAG Pipeline               │
+                                          │  │  - Query Analysis           │
+                                          │  │  - Hybrid Search            │
+                                          │  │  - Gemini LLM               │
+                                          │  └──────────────┬──────────────┘
+                                          │                 │
+                                          │                 ▼
+                                          │  ┌─────────────────────────────┐
+                                          │  │  pgvector                   │
+                                          │  │  - Vector embeddings        │
+                                          │  │  - Code chunks              │
+                                          │  └─────────────────────────────┘
+
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  KODA FEATURES                                                                  │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  Query Intelligence:                                                            │
+│    - Auto-detects query intent (definition, explanation, list, usage, schema)   │
+│    - Expands search terms (auth → authentication, login, token, session)        │
+│    - Hybrid search combines semantic + keyword matching                         │
+│    - Adjusts result count based on query type                                   │
+│                                                                                 │
+│  UI Features:                                                                   │
+│    - Real-time WebSocket streaming                                              │
+│    - Markdown rendering with syntax highlighting                                │
+│    - Code blocks with copy button                                               │
+│    - Sources panel with score indicators                                        │
+│    - Query intent badges                                                        │
+│    - Dark theme (Linear/Vercel inspired)                                        │
+│                                                                                 │
+│  Settings:                                                                      │
+│    - Language filter (Java, Python, TypeScript, etc.)                           │
+│    - Toggle hybrid search                                                       │
+│    - Toggle source display                                                      │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  QUICK START: KODA WEB UI                                                       │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  # 1. Configure environment                                                     │
+│  cp .env.example .env                                                           │
+│  vim .env  # Set GCP_PROJECT_ID=your-project-id                                 │
+│                                                                                 │
+│  # 2. Start Koda (and dependencies)                                             │
+│  docker compose up koda -d                                                      │
+│                                                                                 │
+│  # 3. Open in browser                                                           │
+│  open http://localhost:8080                                                     │
+│                                                                                 │
+│  # 4. (First time) Index your codebase                                          │
+│  docker compose exec app python scripts/index_codebase.py -s data/raw           │
+│                                                                                 │
+│  # 5. Start asking questions!                                                   │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
 # Docker Setup
 
 Run everything with Docker—no local PostgreSQL installation needed.
@@ -627,16 +741,23 @@ Run everything with Docker—no local PostgreSQL installation needed.
 │  DOCKER QUICK START                                                             │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                 │
-│  # 1. Start everything (builds app + starts pgvector)                           │
+│  # 1. Configure environment                                                     │
+│  cp .env.example .env                                                           │
+│  # Edit .env and set GCP_PROJECT_ID                                             │
+│                                                                                 │
+│  # 2. Start all services (builds app + starts pgvector + Koda web)              │
 │  docker compose up -d                                                           │
 │                                                                                 │
-│  # 2. Index your codebase                                                       │
+│  # 3. Index your codebase                                                       │
 │  docker compose exec app python scripts/index_codebase.py -s data/raw           │
 │                                                                                 │
-│  # 3. Query                                                                     │
+│  # 4a. Query via CLI                                                            │
 │  docker compose exec app python scripts/query_codebase.py -i                    │
 │                                                                                 │
-│  # 4. Fine-tuning (prepare data)                                                │
+│  # 4b. Query via Web UI (Koda)                                                  │
+│  open http://localhost:8080                                                     │
+│                                                                                 │
+│  # 5. Fine-tuning (prepare data)                                                │
 │  docker compose exec app python scripts/prepare_data.py                         │
 │                                                                                 │
 │  # Stop services                                                                │
@@ -649,23 +770,37 @@ Run everything with Docker—no local PostgreSQL installation needed.
 │  DOCKER ARCHITECTURE                                                            │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                 │
-│  ┌─────────────────┐      ┌─────────────────┐                                   │
-│  │      app        │      │    pgvector     │                                   │
-│  │                 │      │                 │                                   │
-│  │  Python 3.11    │─────▶│  PostgreSQL 16  │                                   │
-│  │  + dependencies │      │  + pgvector     │                                   │
-│  │                 │      │                 │                                   │
-│  └────────┬────────┘      └─────────────────┘                                   │
-│           │                                                                     │
-│           ▼                                                                     │
-│  ┌─────────────────┐                                                            │
-│  │  Mounted Volumes│                                                            │
-│  │                 │                                                            │
-│  │  - ./data/raw   │  Your source code                                          │
-│  │  - ./config     │  Configuration                                             │
-│  │  - ~/.config/   │  GCP credentials                                           │
-│  │      gcloud     │                                                            │
-│  └─────────────────┘                                                            │
+│                         ┌─────────────────┐                                     │
+│                         │    pgvector     │                                     │
+│                         │                 │                                     │
+│                         │  PostgreSQL 16  │                                     │
+│                         │  + pgvector     │                                     │
+│                         │  port: 5432     │                                     │
+│                         └────────▲────────┘                                     │
+│                                  │                                              │
+│              ┌───────────────────┼───────────────────┐                          │
+│              │                   │                   │                          │
+│  ┌───────────┴───────┐  ┌───────┴───────┐  ┌───────┴───────┐                    │
+│  │       app         │  │   koda-api    │  │     koda      │                    │
+│  │                   │  │               │  │               │                    │
+│  │  CLI Tools        │  │  FastAPI      │  │  React SPA    │                    │
+│  │  - index_codebase │  │  - REST API   │  │  - TypeScript │                    │
+│  │  - query_codebase │  │  - WebSocket  │  │  - TailwindCSS│                    │
+│  │  - prepare_data   │  │  port: 8080   │  │  nginx :80    │                    │
+│  │  - run_training   │  │  (internal)   │  │  port: 8080   │                    │
+│  └───────────────────┘  └───────────────┘  └───────┬───────┘                    │
+│                                                    │                            │
+│                                                    ▼                            │
+│                                            ┌───────────────┐                    │
+│                                            │   Browser     │                    │
+│                                            │               │                    │
+│                                            │ localhost:8080│                    │
+│                                            └───────────────┘                    │
+│                                                                                 │
+│  Mounted Volumes:                                                               │
+│    - ./data/raw      Your source code                                           │
+│    - ./config        Configuration                                              │
+│    - ~/.config/gcloud  GCP credentials                                          │
 │                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────┘
 

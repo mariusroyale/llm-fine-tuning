@@ -28,6 +28,11 @@ jsonschema>=4.23.0
 psycopg[binary]>=3.2.0    # PostgreSQL client
 pgvector>=0.3.0           # pgvector Python client
 
+# Web Server
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+websockets>=13.0
+
 # Development
 pytest>=8.3.0
 black>=24.10.0
